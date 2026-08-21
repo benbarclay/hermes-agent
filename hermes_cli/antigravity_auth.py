@@ -41,32 +41,18 @@ logger = logging.getLogger(__name__)
 # Configuration (env-sourced — NO defaults baked into the tree)
 # ---------------------------------------------------------------------------
 
-# Google OAuth client id issued to Nous for Antigravity.  REQUIRED; the
-# provider stays hidden + inert without it.
-ANTIGRAVITY_CLIENT_ID_ENV = "ANTIGRAVITY_CLIENT_ID"
-
 # Base URL of the NAS broker that holds the client_secret and performs the
-# code exchange / refresh.  Defaults to the public portal origin.
+# code exchange / refresh, and owns the Google client config (discovered at
+# login).  Defaults to the public portal origin.
 ANTIGRAVITY_NAS_BASE_URL_ENV = "ANTIGRAVITY_NAS_BASE_URL"
 DEFAULT_ANTIGRAVITY_NAS_BASE_URL = "https://portal.nousresearch.com"
 
-# Google authorize + token endpoints (token endpoint is only used by NAS,
-# which holds the secret; Hermes talks to the broker, not Google, for tokens).
-ANTIGRAVITY_GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-
-# Scope requested at the Google consent screen.  The exact scope Google
-# grants for Cloud Code Assist access is still to be confirmed against the
-# issued client; this is the minimal email/profile + cloud-code-assist
-# combination used by the Antigravity ecosystem.  Re-verify at launch.
-ANTIGRAVITY_OAUTH_SCOPE = (
-    "openid email profile https://www.googleapis.com/auth/cloud-code-assist"
-)
-
 ANTIGRAVITY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 300  # refresh 5 min before expiry
 
-# NAS broker endpoints (to implement in nous-account-service).
+# NAS broker endpoints.
 ANTIGRAVITY_NAS_EXCHANGE_PATH = "/api/oauth/antigravity/exchange"
 ANTIGRAVITY_NAS_REFRESH_PATH = "/api/oauth/antigravity/refresh"
+ANTIGRAVITY_NAS_CONFIG_PATH = "/api/oauth/antigravity/config"
 
 # Inference base URL — Cloud Code Assist host.  SINGLE SOURCE OF TRUTH for
 # the CCA host: the provider profile (plugins/model-providers/antigravity)
@@ -102,39 +88,16 @@ class _AuthError(Exception):
 
 
 def antigravity_enabled() -> bool:
-    """True when the Antigravity credential is configured (the enable gate).
+    """True when the Antigravity provider is surfaced/usable.
 
-    Presence of a usable ``ANTIGRAVITY_CLIENT_ID`` is the config-driven
-    activation signal: absent = provider invisible + inert everywhere,
-    present = surfaced (picker/setup/auth) and usable.  Mirrors the house
-    relay_url pattern.
-
-    Uses ``get_env_value_prefer_dotenv`` (the canonical Hermes credential
-    resolver) so a value set in ``~/.hermes/.env`` and a value exported in
-    the shell both enable the provider consistently — and so this gate
-    agrees with the discovery gate in ``providers/__init__`` (which defers
-    to this predicate via ``register_hidden_provider_gate``).
+    With NAS owning the Google client config (discovered at login), there is
+    no local enable-gate env var — the provider is enabled by default and
+    usable whenever a logged-in Nous user has a reachable NAS broker. The
+    provider stays `hidden=True` (out of the default picker) until configured,
+    matching the dark-launch intent; once a user runs `hermes auth add
+    antigravity` it becomes the active provider.
     """
-    from hermes_cli.auth import has_usable_secret
-    from hermes_cli.config import get_env_value_prefer_dotenv
-
-    return has_usable_secret(
-        get_env_value_prefer_dotenv(ANTIGRAVITY_CLIENT_ID_ENV) or ""
-    )
-
-
-def antigravity_client_id() -> str:
-    """Return the configured Google client id, or raise when unconfigured."""
-    from hermes_cli.config import get_env_value_prefer_dotenv
-
-    cid = (get_env_value_prefer_dotenv(ANTIGRAVITY_CLIENT_ID_ENV) or "").strip()
-    if not cid:
-        raise _AuthError(
-            "Antigravity is not configured: set ANTIGRAVITY_CLIENT_ID in "
-            "~/.hermes/.env (the Google OAuth client id issued for Antigravity).",
-            code="antigravity_not_configured",
-        )
-    return cid
+    return True
 
 
 def antigravity_nas_base_url() -> str:
@@ -326,12 +289,26 @@ def _antigravity_access_token_is_expiring(
 # ---------------------------------------------------------------------------
 
 
+def _nous_bearer_header() -> Dict[str, str]:
+    """Resolve the caller's Nous access token and build a Bearer auth header.
+
+    NAS gates the Antigravity broker behind a valid Nous token from a logged-in
+    user (no specific scope). Lazily imported so this module stays
+    light-importable during provider discovery.
+    """
+    from hermes_cli.auth import resolve_nous_access_token
+
+    token = resolve_nous_access_token()
+    return {"Authorization": f"Bearer {token}"}
+
+
 def _exchange_code(
     code: str, code_verifier: str, redirect_uri: str, *, timeout: float = 30.0
 ) -> Dict[str, Any]:
     """POST the authorize code to the NAS broker for exchange with Google."""
     broker = _validate_broker_url(antigravity_nas_base_url())
     url = f"{broker}{ANTIGRAVITY_NAS_EXCHANGE_PATH}"
+    headers = {"Accept": "application/json", **_nous_bearer_header()}
     with httpx.Client(timeout=httpx.Timeout(timeout)) as client:
         response = client.post(
             url,
@@ -340,7 +317,7 @@ def _exchange_code(
                 "code_verifier": code_verifier,
                 "redirect_uri": redirect_uri,
             },
-            headers={"Accept": "application/json"},
+            headers=headers,
         )
     if response.status_code != 200:
         raise _AuthError(
@@ -362,11 +339,12 @@ def _refresh_tokens(refresh_token: str, *, timeout: float = 30.0) -> Dict[str, A
     """POST the refresh token to the NAS broker for rotation."""
     broker = _validate_broker_url(antigravity_nas_base_url())
     url = f"{broker}{ANTIGRAVITY_NAS_REFRESH_PATH}"
+    headers = {"Accept": "application/json", **_nous_bearer_header()}
     with httpx.Client(timeout=httpx.Timeout(timeout)) as client:
         response = client.post(
             url,
             json={"refresh_token": refresh_token},
-            headers={"Accept": "application/json"},
+            headers=headers,
         )
     if response.status_code != 200:
         body = response.text or response.reason_phrase
@@ -383,6 +361,34 @@ def _refresh_tokens(refresh_token: str, *, timeout: float = 30.0) -> Dict[str, A
             code="antigravity_refresh_invalid",
             relogin_required=True,
         )
+    return payload
+
+
+def _fetch_antigravity_config(*, timeout: float = 30.0) -> Dict[str, Any]:
+    """GET the Google-client config from NAS (client_id, scope, authorize_url).
+
+    NAS is the single source of truth for the Google client; the local agent
+    builds its authorize URL from this (adding only its own PKCE challenge,
+    state, and loopback redirect_uri).
+    """
+    broker = _validate_broker_url(antigravity_nas_base_url())
+    url = f"{broker}{ANTIGRAVITY_NAS_CONFIG_PATH}"
+    headers = {"Accept": "application/json", **_nous_bearer_header()}
+    with httpx.Client(timeout=httpx.Timeout(timeout)) as client:
+        response = client.get(url, headers=headers)
+    if response.status_code != 200:
+        raise _AuthError(
+            f"Antigravity config fetch failed (HTTP {response.status_code})."
+            + (f" {response.text.strip()}" if response.text else ""),
+            code="antigravity_config_failed",
+        )
+    payload = response.json()
+    for key in ("client_id", "authorize_url", "scope"):
+        if not str(payload.get(key, "") or "").strip():
+            raise _AuthError(
+                f"Antigravity config response missing {key}.",
+                code="antigravity_config_invalid",
+            )
     return payload
 
 
@@ -528,7 +534,7 @@ def _login_antigravity(
         except Exception:
             pass  # no existing creds → fall through to a fresh login
 
-    cid = antigravity_client_id()
+    cfg = _fetch_antigravity_config()
     verifier, challenge, state = _antigravity_pkce_pair()
     port = _pick_loopback_port()
     redirect_uri = f"http://127.0.0.1:{port}/antigravity/callback"
@@ -539,17 +545,17 @@ def _login_antigravity(
     print()
 
     authorize_params = {
-        "client_id": cid,
+        "client_id": cfg["client_id"],
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": ANTIGRAVITY_OAUTH_SCOPE,
+        "scope": cfg["scope"],
         "code_challenge": challenge,
         "code_challenge_method": "S256",
         "state": state,
         "access_type": "offline",
         "prompt": "consent",
     }
-    authorize_url = f"{ANTIGRAVITY_GOOGLE_AUTHORIZE_URL}?{urlencode(authorize_params)}"
+    authorize_url = f"{cfg['authorize_url']}?{urlencode(authorize_params)}"
 
     open_browser = not bool(getattr(args, "no_browser", False))
     can_open_browser = True
@@ -602,7 +608,7 @@ def _login_antigravity(
         "token_type": str(
             token_payload.get("token_type", "Bearer") or "Bearer"
         ).strip(),
-        "scope": str(token_payload.get("scope") or ANTIGRAVITY_OAUTH_SCOPE).strip(),
+        "scope": str(token_payload.get("scope") or "").strip(),
         "obtained_at": now.isoformat(),
         "expires_at": datetime.fromtimestamp(
             now.timestamp() + expires_in, tz=timezone.utc
@@ -765,13 +771,6 @@ def _token_expiry_ms(expires_at: Any) -> Optional[int]:
 
 def get_antigravity_auth_status() -> Dict[str, Any]:
     """Return auth status dict (logged_in, account hints, error)."""
-    if not antigravity_enabled():
-        return {
-            "provider": "antigravity",
-            "logged_in": False,
-            "configured": False,
-            "error": "ANTIGRAVITY_CLIENT_ID is not set",
-        }
     try:
         creds = resolve_antigravity_runtime_credentials(refresh_if_expiring=False)
         access = creds.get("api_key", "")

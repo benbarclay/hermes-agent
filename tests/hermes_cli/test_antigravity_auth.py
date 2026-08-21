@@ -25,6 +25,11 @@ class _FakeNAS:
     def __init__(self, exchange_payload=None, refresh_payload=None):
         self.exchange_body = None
         self.refresh_body = None
+        self.config_payload = {
+            "client_id": "google-client-123",
+            "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+            "scope": "openid email profile https://www.googleapis.com/auth/cloud-code-assist",
+        }
         self.exchange_payload = exchange_payload or {
             "access_token": "at-1",
             "refresh_token": "rt-1",
@@ -38,6 +43,18 @@ class _FakeNAS:
         }
 
         class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                if self.path == aa.ANTIGRAVITY_NAS_CONFIG_PATH:
+                    data = json.dumps(outer.config_payload).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
             def do_POST(self):  # noqa: N802
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 obj = json.loads(body)
@@ -88,6 +105,10 @@ def broker_env(fake_nas, monkeypatch):
     """Point the broker at the fake NAS and skip the HTTPS guard (test-only)."""
     monkeypatch.setattr(aa, "antigravity_nas_base_url", lambda: fake_nas.base_url)
     monkeypatch.setattr(aa, "_validate_broker_url", lambda url: url.rstrip("/"))
+    # NAS broker calls require a valid Nous token; provide a fake one.
+    monkeypatch.setattr(
+        aa, "_nous_bearer_header", lambda: {"Authorization": "Bearer fake-nous-token"}
+    )
     return fake_nas
 
 
@@ -98,16 +119,16 @@ def clean_home(tmp_path, monkeypatch):
 
 
 def test_enable_gate(monkeypatch):
+    # Provider is enabled by default; no local client_id gate anymore
+    # (NAS owns the Google client config, discovered at login).
     monkeypatch.delenv("ANTIGRAVITY_CLIENT_ID", raising=False)
-    assert aa.antigravity_enabled() is False
-    monkeypatch.setenv("ANTIGRAVITY_CLIENT_ID", "client-123")
     assert aa.antigravity_enabled() is True
 
 
-def test_client_id_required(monkeypatch):
+def test_client_id_comes_from_nas_discovery(monkeypatch):
+    # The login flow fetches client config from NAS discovery, not local env.
     monkeypatch.delenv("ANTIGRAVITY_CLIENT_ID", raising=False)
-    with pytest.raises(aa._AuthError, match="not configured"):
-        aa.antigravity_client_id()
+    assert hasattr(aa, "_fetch_antigravity_config")
 
 
 def test_pkce_pair_shape():
@@ -214,8 +235,10 @@ def test_login_rejects_state_mismatch(clean_home, broker_env, monkeypatch):
 def test_status_reflects_gate(monkeypatch):
     monkeypatch.delenv("ANTIGRAVITY_CLIENT_ID", raising=False)
     status = aa.get_antigravity_auth_status()
+    # Provider is always configured now (NAS owns the client config); logged_in
+    # reflects whether tokens are stored.
     assert status["logged_in"] is False
-    assert status["configured"] is False
+    assert status["configured"] is True
 
 
 def test_runtime_resolution_quarantines_on_terminal_refresh_failure(
@@ -262,6 +285,9 @@ def test_runtime_resolution_quarantines_on_terminal_refresh_failure(
     nas = _FailingNAS()
     monkeypatch.setattr(aa, "antigravity_nas_base_url", lambda: nas.base_url)
     monkeypatch.setattr(aa, "_validate_broker_url", lambda url: url.rstrip("/"))
+    monkeypatch.setattr(
+        aa, "_nous_bearer_header", lambda: {"Authorization": "Bearer fake-nous-token"}
+    )
 
     from hermes_cli.auth import AuthError
 

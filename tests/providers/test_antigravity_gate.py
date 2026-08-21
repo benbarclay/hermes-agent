@@ -1,13 +1,12 @@
-"""Tests for the Antigravity provider gate (secret launch).
+"""Tests for the Antigravity provider gate.
 
-Verifies:
- 1. The antigravity profile exists but is HIDDEN from list_providers() by
-    default (no discovery-surface leakage — picker, setup, auth lists).
- 2. It still resolves by name via get_provider_profile() so an explicit
-    ``model.provider: antigravity`` config works.
- 3. Presence of ANTIGRAVITY_CLIENT_ID (the enable gate) surfaces it.
- 4. The profile's auth_type is oauth_external so the structural skips in
-    models.py / auth.py registry auto-extend also keep it out of pickers.
+With NAS owning the Google client config, the provider is enabled by default
+(no local client_id gate). Verifies:
+ 1. The antigravity profile is present in list_providers() by default.
+ 2. It resolves by name via get_provider_profile() for explicit
+    ``model.provider: antigravity`` config.
+ 3. The profile's auth_type is oauth_external so it is handled as an OAuth
+    provider.
 """
 
 from __future__ import annotations
@@ -37,12 +36,6 @@ def _clear_provider_caches():
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch, tmp_path):
-    # Isolate from the real ~/.hermes/.env: the gate reads the credential
-    # through get_env_value_prefer_dotenv, which prefers the .env under
-    # HERMES_HOME. Point HERMES_HOME at a temp dir so a developer's real
-    # ANTIGRAVITY_CLIENT_ID in ~/.hermes/.env can't break the hidden-by-default
-    # assertions (the exact environment an internal maintainer of this
-    # dark-launch will have).
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.delenv("ANTIGRAVITY_CLIENT_ID", raising=False)
     _clear_provider_caches()
@@ -50,27 +43,26 @@ def _clean_env(monkeypatch, tmp_path):
     _clear_provider_caches()
 
 
-def test_antigravity_hidden_by_default():
-    """Without the credential, antigravity never appears in list_providers()."""
+def test_antigravity_surfaced_by_default():
+    """The provider is enabled by default (no local client_id gate)."""
     from providers import list_providers
 
     names = {p.name for p in list_providers()}
-    assert "antigravity" not in names
+    assert "antigravity" in names
 
 
-def test_antigravity_resolves_by_name_when_hidden():
-    """get_provider_profile() still resolves the profile for explicit config."""
+def test_antigravity_resolves_by_name():
+    """get_provider_profile() resolves the profile for explicit config."""
     from providers import get_provider_profile
 
     prof = get_provider_profile("antigravity")
     assert prof is not None
     assert prof.name == "antigravity"
-    assert prof.hidden is True
-    assert prof.auth_type == "oauth_external"  # structural picker skip
+    assert prof.auth_type == "oauth_external"  # OAuth-handled provider
 
 
 def test_antigravity_surfaced_when_configured(monkeypatch):
-    """Setting ANTIGRAVITY_CLIENT_ID flips the enable gate."""
+    """Regardless of ANTIGRAVITY_CLIENT_ID, the provider is surfaced."""
     monkeypatch.setenv("ANTIGRAVITY_CLIENT_ID", "test-client-id-123")
     from providers import list_providers
 
@@ -79,13 +71,7 @@ def test_antigravity_surfaced_when_configured(monkeypatch):
 
 
 def test_antigravity_surfaced_via_dotenv_only(tmp_path, monkeypatch):
-    """A credential in ~/.hermes/.env (not os.environ) surfaces the provider.
-
-    Pins the enable-gate consistency fix: discovery (list_providers) and the
-    auth-side gate (antigravity_enabled) must agree on what counts as
-    configured, so a user who follows the documented ``.env`` setup never hits
-    a surfaced-but-dead provider.
-    """
+    """A credential in ~/.hermes/.env still surfaces the provider."""
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir(parents=True)
     (hermes_home / ".env").write_text("ANTIGRAVITY_CLIENT_ID=dotenv-client-id\n")
@@ -103,7 +89,7 @@ def test_antigravity_surfaced_via_dotenv_only(tmp_path, monkeypatch):
 
 
 def test_antigravity_visible_with_include_hidden():
-    """include_hidden=True bypasses the gate entirely."""
+    """include_hidden=True still includes it."""
     from providers import list_providers
 
     names = {p.name for p in list_providers(include_hidden=True)}
@@ -117,6 +103,6 @@ def test_antigravity_profile_metadata():
     prof = get_provider_profile("antigravity")
     assert prof is not None
     assert "cloudcode-pa.googleapis.com" in (prof.base_url or "")
-    assert prof.env_vars == ("ANTIGRAVITY_CLIENT_ID",)
+    assert prof.env_vars == ()
     assert prof.fallback_models  # curated list present for the picker
     assert prof.supports_health_check is False  # no /models catalog to probe

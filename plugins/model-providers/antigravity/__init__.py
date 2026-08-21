@@ -12,18 +12,15 @@ over the Gemini-native request builder) and the OAuth flow lives in
 exchange → direct inference).
 
 Secret-launch mechanics:
-- ``hidden=True`` keeps the provider out of every discovery surface
-  (``/model`` picker, setup wizard, ``hermes auth`` lists, doctor) unless
-  ``ANTIGRAVITY_CLIENT_ID`` is present in the environment.  Presence of that
-  credential is the enable gate (config-driven activation — registers when
-  configured, no-ops when absent).  The gate defers to
-  ``hermes_cli.antigravity_auth.antigravity_enabled()`` (registered below) so
-  discovery and auth/runtime read the SAME credential resolver
-  (``get_env_value_prefer_dotenv`` — honors both ``~/.hermes/.env`` and the
-  shell env).
+- ``hidden=True`` keeps the provider out of the default discovery surfaces
+  (``/model`` picker, setup wizard, ``hermes auth`` lists, doctor) until it is
+  explicitly configured. With NAS owning the Google client config (discovered
+  at login via ``/api/oauth/antigravity/config``), the provider is enabled by
+  default and surfaced once a logged-in Nous user runs ``hermes auth add
+  antigravity``. The visibility gate defers to
+  ``hermes_cli.antigravity_auth.antigravity_enabled()`` (registered below).
 - The provider still resolves by name via ``get_provider_profile()`` so an
-  explicit ``model.provider: antigravity`` in config.yaml works once the
-  credential is configured.
+  explicit ``model.provider: antigravity`` in config.yaml works.
 """
 
 from typing import Any
@@ -72,7 +69,7 @@ antigravity = AntigravityProfile(
     api_mode="chat_completions",
     auth_type="oauth_external",
     base_url=ANTIGRAVITY_CCA_BASE_URL,
-    env_vars=("ANTIGRAVITY_CLIENT_ID",),
+    env_vars=(),
     hidden=True,
     supports_health_check=False,
     fallback_models=ANTIGRAVITY_FALLBACK_MODELS,

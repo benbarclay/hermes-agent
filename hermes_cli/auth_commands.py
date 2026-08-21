@@ -180,8 +180,8 @@ def auth_add_command(args) -> None:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
         elif provider == "antigravity":
-            # Antigravity is OAuth-only (Google account login).  Refuse API-key
-            # mode; the OAuth branch below is gated on ANTIGRAVITY_CLIENT_ID.
+            # Antigravity is OAuth-only (Google account login); the OAuth
+            # branch fetches the client config from NAS discovery.
             requested_type = AUTH_TYPE_OAUTH
         else:
             requested_type = AUTH_TYPE_OAUTH if provider in _OAUTH_CAPABLE_PROVIDERS else AUTH_TYPE_API_KEY
@@ -443,22 +443,15 @@ def auth_add_command(args) -> None:
         return
 
     if provider == "antigravity":
-        # Secret-launch gate: the name is accepted only when the client id is
-        # configured.  Not in PROVIDER_REGISTRY / _OAUTH_CAPABLE_PROVIDERS, so
-        # it never appears in pickers or auth lists; this branch is reachable
-        # only by an explicit `hermes auth add antigravity`.
+        # Antigravity is OAuth-only and not in PROVIDER_REGISTRY /
+        # _OAUTH_CAPABLE_PROVIDERS, so it never appears in pickers or auth
+        # lists; this branch is reachable only by an explicit
+        # `hermes auth add antigravity`. The client config (client_id, scope,
+        # authorize_url) is fetched from NAS discovery at login.
         try:
-            from hermes_cli.antigravity_auth import (
-                _login_antigravity,
-                antigravity_enabled,
-            )
+            from hermes_cli.antigravity_auth import _login_antigravity
         except Exception as exc:  # pragma: no cover - import must not break auth
             raise SystemExit(f"Antigravity auth module unavailable: {exc}")
-        if not antigravity_enabled():
-            raise SystemExit(
-                "Antigravity is not configured. Set ANTIGRAVITY_CLIENT_ID in "
-                "~/.hermes/.env and try again."
-            )
         _login_antigravity(args, auth_mod.PROVIDER_REGISTRY.get("antigravity"))
         # _login_antigravity persists to the auth.json singleton and updates
         # config; add a pool entry so `hermes auth list` / pool-based routing
