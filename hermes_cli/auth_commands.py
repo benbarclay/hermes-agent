@@ -80,6 +80,8 @@ def _normalize_provider(provider: str) -> str:
         return "openrouter"
     if normalized in {"grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"}:
         return "xai-oauth"
+    if normalized in {"antigravity", "google-antigravity", "antigravity-oauth"}:
+        return "antigravity"
     # Check if it matches a custom provider name
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:
@@ -163,7 +165,12 @@ def _format_exhausted_status(entry) -> str:
 
 def auth_add_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
-    if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
+    if (
+        provider not in PROVIDER_REGISTRY
+        and provider != "openrouter"
+        and provider != "antigravity"
+        and not provider.startswith(CUSTOM_POOL_PREFIX)
+    ):
         raise SystemExit(f"Unknown provider: {provider}")
 
     requested_type = str(getattr(args, "auth_type", "") or "").strip().lower()
@@ -172,6 +179,10 @@ def auth_add_command(args) -> None:
     if not requested_type:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
+        elif provider == "antigravity":
+            # Antigravity is OAuth-only (Google account login).  Refuse API-key
+            # mode; the OAuth branch below is gated on ANTIGRAVITY_CLIENT_ID.
+            requested_type = AUTH_TYPE_OAUTH
         else:
             requested_type = AUTH_TYPE_OAUTH if provider in _OAUTH_CAPABLE_PROVIDERS else AUTH_TYPE_API_KEY
 
@@ -429,6 +440,53 @@ def auth_add_command(args) -> None:
         )
         pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
+    if provider == "antigravity":
+        # Secret-launch gate: the name is accepted only when the client id is
+        # configured.  Not in PROVIDER_REGISTRY / _OAUTH_CAPABLE_PROVIDERS, so
+        # it never appears in pickers or auth lists; this branch is reachable
+        # only by an explicit `hermes auth add antigravity`.
+        try:
+            from hermes_cli.antigravity_auth import (
+                _login_antigravity,
+                antigravity_enabled,
+            )
+        except Exception as exc:  # pragma: no cover - import must not break auth
+            raise SystemExit(f"Antigravity auth module unavailable: {exc}")
+        if not antigravity_enabled():
+            raise SystemExit(
+                "Antigravity is not configured. Set ANTIGRAVITY_CLIENT_ID in "
+                "~/.hermes/.env and try again."
+            )
+        _login_antigravity(args, auth_mod.PROVIDER_REGISTRY.get("antigravity"))
+        # _login_antigravity persists to the auth.json singleton and updates
+        # config; add a pool entry so `hermes auth list` / pool-based routing
+        # see the credential too (mirrors the qwen-oauth flow).
+        added_label = provider
+        try:
+            from hermes_cli.antigravity_auth import resolve_antigravity_runtime_credentials
+
+            creds = resolve_antigravity_runtime_credentials(refresh_if_expiring=False)
+            added_label = (getattr(args, "label", None) or "").strip() or label_from_token(
+                creds["api_key"],
+                _oauth_default_label(provider, len(pool.entries()) + 1),
+            )
+            entry = PooledCredential(
+                provider=provider,
+                id=uuid.uuid4().hex[:6],
+                label=added_label,
+                auth_type=AUTH_TYPE_OAUTH,
+                priority=0,
+                source=f"{SOURCE_MANUAL}:antigravity_oauth",
+                access_token=creds["api_key"],
+                refresh_token=str(creds.get("refresh_token") or ""),
+                base_url=creds.get("base_url"),
+            )
+            pool.add_entry(entry)
+        except Exception:
+            pass  # singleton save already succeeded; pool entry is best-effort
+        print(f'Added {provider} OAuth credential: "{added_label}"')
         return
 
     raise SystemExit(f"`hermes auth add {provider}` is not implemented for auth type {requested_type} yet.")

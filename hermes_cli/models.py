@@ -2959,6 +2959,18 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         live = _fetch_ai_gateway_models()
         if live:
             return live
+    if normalized == "antigravity":
+        # Pre-release provider: curated list from the profile.  The CCA
+        # endpoint has no public /models catalog to probe.
+        try:
+            from providers import get_provider_profile
+
+            _p = get_provider_profile("antigravity")
+            if _p is not None and _p.fallback_models:
+                return list(_p.fallback_models)
+        except Exception:
+            pass
+        return list(_PROVIDER_MODELS.get("antigravity", []))
     if normalized == "deepinfra":
         # DeepInfra's generic /models endpoint mixes chat, image, video,
         # speech, and embedding models. The tagged catalog helper is the only

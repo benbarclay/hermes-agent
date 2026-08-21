@@ -30,8 +30,8 @@ on it with a hard deadline; on timeout we close the response (which unblocks /
 cancels the read) and return whatever partial bytes were collected.
 
 Ported and adapted from openclaw/openclaw#95108 ("bound Anthropic error
-streams"), generalized to cover Hermes's three streaming error-body sites
-(native Gemini, Gemini Cloud Code, Antigravity Cloud Code).
+streams"), generalized to cover Hermes's streaming error-body sites
+(native Gemini and the Antigravity / Cloud Code Assist transport).
 """
 
 from __future__ import annotations

@@ -35,6 +35,7 @@ import importlib.util
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 from providers.base import OMIT_TEMPERATURE, ProviderProfile  # noqa: F401
 
@@ -76,23 +77,106 @@ def get_provider_profile(name: str) -> ProviderProfile | None:
     return _REGISTRY.get(canonical)
 
 
-def list_providers() -> list[ProviderProfile]:
-    """Return all registered provider profiles (one per canonical name)."""
+def _hidden_provider_enabled(name: str) -> bool:
+    """Return True when a hidden provider should be surfaced after all.
+
+    A hidden provider stays hidden unless something explicitly enables it.
+    The default enable predicate is credential presence: if any of the
+    provider's ``env_vars`` resolves to a usable value in the environment
+    (or ``~/.hermes/.env``), the provider is considered enabled.  Providers
+    can register a richer predicate via ``register_hidden_provider_gate``.
+
+    This mirrors the house "feature registers when configured" pattern
+    (relay_url / proxy_url): absence = invisible + inert, presence = active.
+    """
+    try:
+        gate = _HIDDEN_GATES.get(name)
+        if gate is not None:
+            return bool(gate())
+    except Exception:
+        logger.debug("hidden gate %s raised; treating as disabled", name, exc_info=True)
+        return False
+
+    profile = _REGISTRY.get(name)
+    if profile is None:
+        return False
+    try:
+        from hermes_cli.auth import has_usable_secret
+
+        for var in profile.env_vars or ():
+            if var and has_usable_secret(_resolve_env_var(var)):
+                return True
+    except Exception:
+        logger.debug("hidden env check for %s failed; staying hidden", name, exc_info=True)
+    return False
+
+
+def _resolve_env_var(var: str) -> str:
+    """Resolve an env var from process env or ``~/.hermes/.env`` (best-effort)."""
+    import os
+
+    val = os.getenv(var, "")
+    if val:
+        return val
+    try:
+        from hermes_constants import get_hermes_home
+
+        env_file = get_hermes_home() / ".env"
+        if env_file.is_file():
+            for line in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if line.startswith(var + "="):
+                    return line[len(var) + 1 :].strip().strip("'\"")
+    except Exception:
+        pass
+    return ""
+
+
+_HIDDEN_GATES: dict[str, Any] = {}
+
+
+def register_hidden_provider_gate(name: str, predicate) -> None:
+    """Register a callable predicate that decides when *name* is surfaced.
+
+    ``predicate`` takes no args and returns a truthy value when the hidden
+    provider should appear in ``list_providers()`` output.  Useful when
+    credential presence isn't the right signal (e.g. a config flag or a
+    combination of settings).  Overrides the default env-var check.
+    """
+    _HIDDEN_GATES[name] = predicate
+
+
+def list_providers(*, include_hidden: bool = False) -> list[ProviderProfile]:
+    """Return all registered provider profiles (one per canonical name).
+
+    Hidden profiles (``profile.hidden`` True) are excluded unless
+    ``include_hidden`` is True or the provider's own enable gate passes
+    (``_hidden_provider_enabled``).  The full list is cached for
+    performance; the hidden filter is applied per call so a gate flip
+    (e.g. a credential appearing in the environment) is reflected without
+    cache invalidation.
+    """
     global _PROVIDER_LIST_CACHE
     if not _discovered:
         _discover_providers()
-    if _PROVIDER_LIST_CACHE is not None:
+    if _PROVIDER_LIST_CACHE is None:
+        # Deduplicate: _REGISTRY has canonical names; _ALIASES points to same objects
+        seen: set[int] = set()
+        result: list[ProviderProfile] = []
+        for profile in _REGISTRY.values():
+            pid = id(profile)
+            if pid not in seen:
+                seen.add(pid)
+                result.append(profile)
+        _PROVIDER_LIST_CACHE = result
+    if include_hidden:
         return list(_PROVIDER_LIST_CACHE)
-    # Deduplicate: _REGISTRY has canonical names; _ALIASES points to same objects
-    seen: set[int] = set()
-    result: list[ProviderProfile] = []
-    for profile in _REGISTRY.values():
-        pid = id(profile)
-        if pid not in seen:
-            seen.add(pid)
-            result.append(profile)
-    _PROVIDER_LIST_CACHE = result
-    return list(result)
+    return [
+        profile
+        for profile in _PROVIDER_LIST_CACHE
+        if not getattr(profile, "hidden", False)
+        or _hidden_provider_enabled(profile.name)
+    ]
 
 
 def _user_plugins_dir() -> Path | None:
