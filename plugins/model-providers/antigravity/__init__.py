@@ -8,15 +8,19 @@ OAuth** against the user's own Antigravity subscription.
 This profile is declarative metadata only — the transport lives in
 ``agent/antigravity_adapter.py`` (Cloud Code Assist envelope + Bearer auth
 over the Gemini-native request builder) and the OAuth flow lives in
-``hermes_cli/auth.py`` (PKCE loopback → NAS-brokered code exchange →
-direct inference).
+``hermes_cli/antigravity_auth.py`` (PKCE loopback → NAS-brokered code
+exchange → direct inference).
 
 Secret-launch mechanics:
 - ``hidden=True`` keeps the provider out of every discovery surface
   (``/model`` picker, setup wizard, ``hermes auth`` lists, doctor) unless
   ``ANTIGRAVITY_CLIENT_ID`` is present in the environment.  Presence of that
   credential is the enable gate (config-driven activation — registers when
-  configured, no-ops when absent).
+  configured, no-ops when absent).  The gate defers to
+  ``hermes_cli.antigravity_auth.antigravity_enabled()`` (registered below) so
+  discovery and auth/runtime read the SAME credential resolver
+  (``get_env_value_prefer_dotenv`` — honors both ``~/.hermes/.env`` and the
+  shell env).
 - The provider still resolves by name via ``get_provider_profile()`` so an
   explicit ``model.provider: antigravity`` in config.yaml works once the
   credential is configured.
@@ -24,14 +28,17 @@ Secret-launch mechanics:
 
 from typing import Any
 
-from providers import register_provider
+from providers import register_hidden_provider_gate, register_provider
 from providers.base import ProviderProfile
 
 
 # Cloud Code Assist host — the backend behind Antigravity.  The Gemini-native
 # request body (built by agent/gemini_native_adapter.build_gemini_request) is
-# wrapped in the CCA envelope at this host; see agent/antigravity_adapter.py.
-ANTIGRAVITY_CCA_BASE_URL = "https://cloudcode-pa.googleapis.com"
+# wrapped in the CCA envelope at this host.  Imported from
+# hermes_cli/antigravity_auth.py so the host has a single source of truth.
+from hermes_cli.antigravity_auth import (
+    ANTIGRAVITY_INFERENCE_BASE_URL as ANTIGRAVITY_CCA_BASE_URL,
+)
 
 # Curated model list shown when live discovery is unavailable.  Must be
 # verified against the real Antigravity endpoint before public launch — the
@@ -72,3 +79,18 @@ antigravity = AntigravityProfile(
 )
 
 register_provider(antigravity)
+
+
+def _antigravity_gate() -> bool:
+    """Enable predicate — defers to the single auth-side gate.
+
+    Registered so ``list_providers()`` and ``antigravity_enabled()`` read the
+    SAME credential resolver, keeping the provider's visibility and its
+    auth/runtime usability in lockstep (never surfaced-but-dead).
+    """
+    from hermes_cli.antigravity_auth import antigravity_enabled
+
+    return antigravity_enabled()
+
+
+register_hidden_provider_gate("antigravity", _antigravity_gate)

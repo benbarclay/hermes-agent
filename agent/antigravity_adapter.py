@@ -52,12 +52,17 @@ from agent.gemini_native_adapter import (
     translate_stream_event,
 )
 
+# Cloud Code Assist host — single source of truth lives in
+# hermes_cli/antigravity_auth.py so a launch-time host correction is one edit.
+from hermes_cli.antigravity_auth import (
+    ANTIGRAVITY_INFERENCE_BASE_URL as ANTIGRAVITY_CCA_HOST,
+)
+
 logger = logging.getLogger(__name__)
 
 # Cloud Code Assist endpoints.  ``loadCodeAssist`` is well-documented across
 # the ecosystem; the generation endpoints below are the reverse-engineered
 # paths and need live confirmation.
-ANTIGRAVITY_CCA_HOST = "https://cloudcode-pa.googleapis.com"
 ANTIGRAVITY_LOAD_ASSIST_PATH = "/v1internal:loadCodeAssist"
 ANTIGRAVITY_STREAM_ASSIST_PATH = "/v1internal:streamCodeAssist"
 ANTIGRAVITY_GENERATE_ASSIST_PATH = "/v1internal:generateCodeAssist"
@@ -335,53 +340,8 @@ class _AntigravityChatNamespace:
         self.completions = _AntigravityChatCompletions(client)
 
 
-class AsyncAntigravityClient:
-    """Async facade over AntigravityClient (mirrors AsyncGeminiNativeClient).
-
-    Delegates to the sync client on a worker thread via the same pattern the
-    gemini adapter uses; the sync client's ``_http`` is not thread-safe for
-    concurrent streams, so each async call uses a short-lived wrapper.
-    """
-
-    def __init__(self, sync_client: AntigravityClient) -> None:
-        self._sync = sync_client
-        self.chat = _AsyncAntigravityChatNamespace(self)
-        self.api_key = sync_client.api_key
-        self.base_url = sync_client.base_url
-        self.is_closed = sync_client.is_closed
-
-    async def close(self) -> None:
-        self._sync.close()
-
-    async def _run(self, fn, *args, **kwargs) -> Any:
-        import asyncio
-
-        return await asyncio.to_thread(fn, *args, **kwargs)
-
-    async def _create_chat_completion(self, **kwargs: Any) -> Any:
-        return await self._run(self._sync._create_chat_completion, **kwargs)
-
-
-class _AsyncAntigravityChatCompletions:
-    def __init__(self, client: AsyncAntigravityClient) -> None:
-        self._client = client
-
-    async def create(self, **kwargs: Any) -> Any:
-        return await self._client._create_chat_completion(**kwargs)
-
-    async def stream(self, **kwargs: Any) -> Any:
-        return await self._client._create_chat_completion(stream=True, **kwargs)
-
-
-class _AsyncAntigravityChatNamespace:
-    def __init__(self, client: AsyncAntigravityClient) -> None:
-        self.completions = _AsyncAntigravityChatCompletions(client)
-
-
-# Re-export for parity with the gemini adapter's public surface.
 __all__ = [
     "AntigravityClient",
-    "AsyncAntigravityClient",
     "build_antigravity_request",
     "ANTIGRAVITY_CCA_HOST",
 ]

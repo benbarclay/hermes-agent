@@ -36,7 +36,14 @@ def _clear_provider_caches():
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
+def _clean_env(monkeypatch, tmp_path):
+    # Isolate from the real ~/.hermes/.env: the gate reads the credential
+    # through get_env_value_prefer_dotenv, which prefers the .env under
+    # HERMES_HOME. Point HERMES_HOME at a temp dir so a developer's real
+    # ANTIGRAVITY_CLIENT_ID in ~/.hermes/.env can't break the hidden-by-default
+    # assertions (the exact environment an internal maintainer of this
+    # dark-launch will have).
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     monkeypatch.delenv("ANTIGRAVITY_CLIENT_ID", raising=False)
     _clear_provider_caches()
     yield
@@ -69,6 +76,30 @@ def test_antigravity_surfaced_when_configured(monkeypatch):
 
     names = {p.name for p in list_providers()}
     assert "antigravity" in names
+
+
+def test_antigravity_surfaced_via_dotenv_only(tmp_path, monkeypatch):
+    """A credential in ~/.hermes/.env (not os.environ) surfaces the provider.
+
+    Pins the enable-gate consistency fix: discovery (list_providers) and the
+    auth-side gate (antigravity_enabled) must agree on what counts as
+    configured, so a user who follows the documented ``.env`` setup never hits
+    a surfaced-but-dead provider.
+    """
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / ".env").write_text("ANTIGRAVITY_CLIENT_ID=dotenv-client-id\n")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("ANTIGRAVITY_CLIENT_ID", raising=False)
+
+    from providers import list_providers
+
+    names = {p.name for p in list_providers()}
+    assert "antigravity" in names
+
+    from hermes_cli.antigravity_auth import antigravity_enabled
+
+    assert antigravity_enabled() is True  # auth gate agrees with discovery
 
 
 def test_antigravity_visible_with_include_hidden():

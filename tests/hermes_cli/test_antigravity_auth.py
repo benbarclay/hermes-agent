@@ -216,3 +216,60 @@ def test_status_reflects_gate(monkeypatch):
     status = aa.get_antigravity_auth_status()
     assert status["logged_in"] is False
     assert status["configured"] is False
+
+
+def test_runtime_resolution_quarantines_on_terminal_refresh_failure(
+    clean_home, monkeypatch
+):
+    """A terminal refresh failure clears dead tokens and marks relogin required."""
+    monkeypatch.setenv("ANTIGRAVITY_CLIENT_ID", "client-123")
+    tokens = {
+        "access_token": "at-1",  # not a JWT → would not auto-refresh; use force
+        "refresh_token": "rt-expired",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+    }
+    aa._save_antigravity_tokens(tokens)
+
+    # Make the broker return a 400 invalid_grant on refresh.
+    class _FailingNAS:
+        base_url = None
+
+        def __init__(self):
+            import socketserver
+
+            class H(BaseHTTPRequestHandler):
+                def do_POST(self):  # noqa: N802
+                    self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                    body = b'{"error": "invalid_grant"}'
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, format, *args):  # noqa: A002
+                    return
+
+            self.server = socketserver.TCPServer(("127.0.0.1", 0), H)
+            self.base_url = f"http://127.0.0.1:{self.server.server_address[1]}"
+            threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+        def close(self):
+            self.server.shutdown()
+            self.server.server_close()
+
+    nas = _FailingNAS()
+    monkeypatch.setattr(aa, "antigravity_nas_base_url", lambda: nas.base_url)
+    monkeypatch.setattr(aa, "_validate_broker_url", lambda url: url.rstrip("/"))
+
+    from hermes_cli.auth import AuthError
+
+    with pytest.raises(AuthError) as excinfo:
+        aa.resolve_antigravity_runtime_credentials(force_refresh=True)
+    assert excinfo.value.relogin_required is True
+    nas.close()
+
+    # Dead tokens cleared from the store → next resolution fails fast.
+    creds = aa.resolve_antigravity_runtime_credentials()
+    assert creds["api_key"] == ""  # quarantined: no usable token remains

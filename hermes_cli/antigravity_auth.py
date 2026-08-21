@@ -68,12 +68,24 @@ ANTIGRAVITY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 300  # refresh 5 min before expi
 ANTIGRAVITY_NAS_EXCHANGE_PATH = "/api/oauth/antigravity/exchange"
 ANTIGRAVITY_NAS_REFRESH_PATH = "/api/oauth/antigravity/refresh"
 
-# Inference base URL — Cloud Code Assist host (mirrors the provider profile).
+# Inference base URL — Cloud Code Assist host.  SINGLE SOURCE OF TRUTH for
+# the CCA host: the provider profile (plugins/model-providers/antigravity)
+# and the transport (agent/antigravity_adapter.py) import this constant, so a
+# launch-time host correction is a one-line change in exactly one place.
 ANTIGRAVITY_INFERENCE_BASE_URL = "https://cloudcode-pa.googleapis.com"
 
 
 class _AuthError(Exception):
-    """Local stand-in for hermes_cli.auth.AuthError (imported lazily)."""
+    """Local stand-in for ``hermes_cli.auth.AuthError``.
+
+    Deliberately NOT imported from ``hermes_cli.auth`` at module top: this
+    module must stay light-importable (std + httpx) because the antigravity
+    provider plugin imports it during provider discovery, and pulling in
+    ``hermes_cli.auth`` there would drag the whole auth subsystem into every
+    ``list_providers()`` call.  The exception is converted to the real
+    ``AuthError`` at the module boundary (``resolve_antigravity_runtime_credentials``),
+    so callers outside this module always see the canonical type.
+    """
 
     def __init__(
         self,
@@ -96,15 +108,26 @@ def antigravity_enabled() -> bool:
     activation signal: absent = provider invisible + inert everywhere,
     present = surfaced (picker/setup/auth) and usable.  Mirrors the house
     relay_url pattern.
+
+    Uses ``get_env_value_prefer_dotenv`` (the canonical Hermes credential
+    resolver) so a value set in ``~/.hermes/.env`` and a value exported in
+    the shell both enable the provider consistently — and so this gate
+    agrees with the discovery gate in ``providers/__init__`` (which defers
+    to this predicate via ``register_hidden_provider_gate``).
     """
     from hermes_cli.auth import has_usable_secret
+    from hermes_cli.config import get_env_value_prefer_dotenv
 
-    return has_usable_secret(os.getenv(ANTIGRAVITY_CLIENT_ID_ENV, ""))
+    return has_usable_secret(
+        get_env_value_prefer_dotenv(ANTIGRAVITY_CLIENT_ID_ENV) or ""
+    )
 
 
 def antigravity_client_id() -> str:
     """Return the configured Google client id, or raise when unconfigured."""
-    cid = (os.getenv(ANTIGRAVITY_CLIENT_ID_ENV, "") or "").strip()
+    from hermes_cli.config import get_env_value_prefer_dotenv
+
+    cid = (get_env_value_prefer_dotenv(ANTIGRAVITY_CLIENT_ID_ENV) or "").strip()
     if not cid:
         raise _AuthError(
             "Antigravity is not configured: set ANTIGRAVITY_CLIENT_ID in "

@@ -107,29 +107,28 @@ def _hidden_provider_enabled(name: str) -> bool:
             if var and has_usable_secret(_resolve_env_var(var)):
                 return True
     except Exception:
-        logger.debug("hidden env check for %s failed; staying hidden", name, exc_info=True)
+        logger.debug(
+            "hidden env check for %s failed; staying hidden", name, exc_info=True
+        )
     return False
 
 
 def _resolve_env_var(var: str) -> str:
-    """Resolve an env var from process env or ``~/.hermes/.env`` (best-effort)."""
-    import os
+    """Resolve an env var using the canonical Hermes credential resolver.
 
-    val = os.getenv(var, "")
-    if val:
-        return val
+    ``get_env_value_prefer_dotenv`` prefers ``~/.hermes/.env`` (honoring the
+    documented ``export VAR=`` and inline-comment forms) then falls back to
+    ``os.environ`` — so hidden-provider enable checks read the same source a
+    user is told to configure.
+    """
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_cli.config import get_env_value_prefer_dotenv
 
-        env_file = get_hermes_home() / ".env"
-        if env_file.is_file():
-            for line in env_file.read_text(encoding="utf-8", errors="ignore").splitlines():
-                line = line.strip()
-                if line.startswith(var + "="):
-                    return line[len(var) + 1 :].strip().strip("'\"")
+        return get_env_value_prefer_dotenv(var) or ""
     except Exception:
-        pass
-    return ""
+        import os
+
+        return os.getenv(var, "")
 
 
 _HIDDEN_GATES: dict[str, Any] = {}
