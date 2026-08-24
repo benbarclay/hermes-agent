@@ -1,8 +1,9 @@
-"""Tests for the Antigravity Cloud Code Assist transport envelope.
+"""Tests for the Antigravity (Gemini per-user-quota) transport.
 
-Verifies the CCA request envelope shape (project / model / request /
-requestType / userAgent / requestId), the loadCodeAssist project resolution,
-Bearer auth (not x-goog-api-key), and response unwrapping.
+Verifies the request goes to the ``:generateContentPerUserQuota`` /
+``:streamGenerateContentPerUserQuota`` endpoints with a standard Gemini body
+and Bearer auth (not API key), and the response/stream translation matches the
+Gemini native shape.
 """
 
 from __future__ import annotations
@@ -12,41 +13,32 @@ import json
 import pytest
 
 from agent.antigravity_adapter import (
-    ANTIGRAVITY_CCA_HOST,
-    ANTIGRAVITY_GENERATE_ASSIST_PATH,
-    ANTIGRAVITY_LOAD_ASSIST_PATH,
-    ANTIGRAVITY_STREAM_ASSIST_PATH,
+    ANTIGRAVITY_BASE_URL,
+    ANTIGRAVITY_GENERATE_PATH,
+    ANTIGRAVITY_STREAM_PATH,
     AntigravityClient,
     build_antigravity_request,
 )
 
 
-class _FakeCCA:
-    """Minimal fake CCA server: loadCodeAssist + generateAssist + stream."""
+class _FakeGeminiPerUserQuota:
+    """Minimal fake Gemini per-user-quota server: generate + stream."""
 
     def __init__(self):
         import http.server
         import socketserver
         import threading
 
-        self.project_req = None
         self.gen_req = None
         self.stream_req = None
         self.auth_header: str | None = None
-        self.client_metadata_header: str | None = None
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_POST(self):  # noqa: N802
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 obj = json.loads(body)
                 outer.auth_header = self.headers.get("Authorization")
-                outer.client_metadata_header = self.headers.get("Client-Metadata")
-                if self.path == ANTIGRAVITY_LOAD_ASSIST_PATH:
-                    outer.project_req = obj
-                    payload = {"cloudaicompanionProject": "proj-from-load"}
-                    self._json(payload)
-                    return
-                if self.path == ANTIGRAVITY_GENERATE_ASSIST_PATH:
+                if self.path.endswith(ANTIGRAVITY_GENERATE_PATH):
                     outer.gen_req = obj
                     payload = {
                         "candidates": [
@@ -60,7 +52,7 @@ class _FakeCCA:
                     }
                     self._json(payload)
                     return
-                if self.path == ANTIGRAVITY_STREAM_ASSIST_PATH:
+                if self.path.endswith(ANTIGRAVITY_STREAM_PATH):
                     outer.stream_req = obj
                     # Two SSE events: a text chunk then a finishReason chunk.
                     events = [
@@ -125,44 +117,34 @@ class _FakeCCA:
 
 
 @pytest.fixture
-def fake_cca():
-    srv = _FakeCCA()
+def fake_api():
+    srv = _FakeGeminiPerUserQuota()
     yield srv
     srv.close()
 
 
-def test_build_antigravity_request_shape():
-    env = build_antigravity_request(
-        project="proj-123",
-        model="gemini-3.5-pro",
+def test_build_antigravity_request_is_gemini_body():
+    body = build_antigravity_request(
+        model="gemini-2.5-flash",
         messages=[{"role": "user", "content": "hi"}],
         tools=[{"type": "function", "function": {"name": "f", "parameters": {}}}],
         max_tokens=100,
     )
-    assert env["project"] == "proj-123"
-    assert env["model"] == "gemini-3.5-pro"
-    assert env["requestType"] == "agent"
-    assert env["userAgent"] == "antigravity"
-    assert env["requestId"].startswith("agent-")
-    # Inner request is the standard Gemini-native body
-    inner = env["request"]
-    assert inner["contents"][0]["parts"][0]["text"] == "hi"
-    assert inner["generationConfig"]["maxOutputTokens"] == 100
-    assert inner["tools"]
+    # Standard Gemini GenerateContent body.
+    assert body["contents"][0]["parts"][0]["text"] == "hi"
+    assert body["generationConfig"]["maxOutputTokens"] == 100
+    assert body["tools"]
 
 
-def test_client_resolves_project_via_load_code_assist(fake_cca):
-    client = AntigravityClient(api_key="test-oauth-token", base_url=fake_cca.base_url)
+def test_client_sends_to_per_user_quota_endpoint_with_bearer(fake_api):
+    client = AntigravityClient(api_key="test-oauth-token", base_url=fake_api.base_url)
     resp = client.chat.completions.create(
-        model="gemini-3.5-pro", messages=[{"role": "user", "content": "hi"}]
+        model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}]
     )
     assert resp.choices[0].message.content == "hello from antigravity"
-    # loadCodeAssist ran once, project was cached into the generation request
-    assert fake_cca.project_req is not None
-    assert fake_cca.gen_req["project"] == "proj-from-load"
-    # Bearer auth, NOT x-goog-api-key
-    assert fake_cca.auth_header == "Bearer test-oauth-token"
-    assert fake_cca.client_metadata_header
+    # Standard Gemini body on the per-user-quota endpoint, Bearer auth.
+    assert fake_api.gen_req["contents"][0]["parts"][0]["text"] == "hi"
+    assert fake_api.auth_header == "Bearer test-oauth-token"
 
 
 def test_client_requires_token():
@@ -170,11 +152,11 @@ def test_client_requires_token():
         AntigravityClient(api_key="")
 
 
-def test_client_streams_sse(fake_cca):
+def test_client_streams_sse(fake_api):
     """The streaming path parses SSE events into text + finish chunks."""
-    client = AntigravityClient(api_key="test-oauth-token", base_url=fake_cca.base_url)
+    client = AntigravityClient(api_key="test-oauth-token", base_url=fake_api.base_url)
     stream = client.chat.completions.stream(
-        model="gemini-3.5-pro", messages=[{"role": "user", "content": "hi"}]
+        model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}]
     )
     text = []
     finish_reason = None
@@ -191,25 +173,25 @@ def test_client_streams_sse(fake_cca):
     assert "".join(text) == "stream complete"
     assert finish_reason == "stop"
     assert usage is not None and usage.total_tokens == 7
-    # The stream request still carried the resolved project + Bearer auth.
-    assert fake_cca.stream_req["project"] == "proj-from-load"
-    assert fake_cca.auth_header == "Bearer test-oauth-token"
+    # Stream request carried the standard body + Bearer auth.
+    assert fake_api.stream_req["contents"][0]["parts"][0]["text"] == "hi"
+    assert fake_api.auth_header == "Bearer test-oauth-token"
 
 
-def test_cca_host_single_source_of_truth():
-    """The CCA host is defined once (in antigravity_auth) and shared.
+def test_inference_base_url_single_source_of_truth():
+    """The inference host is defined once (in antigravity_auth) and shared.
 
     The provider profile, the transport, and the runtime resolution all import
     the same constant — a launch-time host correction is one edit.  Assert the
     three consumers agree rather than pinning the literal (which only passes
     if the constant and the test were edited together).
     """
-    from agent.antigravity_adapter import ANTIGRAVITY_CCA_HOST
+    from agent.antigravity_adapter import ANTIGRAVITY_BASE_URL
     from hermes_cli.antigravity_auth import ANTIGRAVITY_INFERENCE_BASE_URL
     from providers import get_provider_profile
 
     prof = get_provider_profile("antigravity")
     assert prof is not None
-    assert ANTIGRAVITY_CCA_HOST == ANTIGRAVITY_INFERENCE_BASE_URL == prof.base_url
-    assert ANTIGRAVITY_CCA_HOST.startswith("https://")
-    assert "cloudcode-pa.googleapis.com" in ANTIGRAVITY_CCA_HOST
+    assert ANTIGRAVITY_BASE_URL == ANTIGRAVITY_INFERENCE_BASE_URL == prof.base_url
+    assert ANTIGRAVITY_BASE_URL.startswith("https://")
+    assert "generativelanguage.googleapis.com" in ANTIGRAVITY_BASE_URL

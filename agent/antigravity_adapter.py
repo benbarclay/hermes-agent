@@ -1,91 +1,61 @@
-"""Google Antigravity transport — Cloud Code Assist envelope over Gemini native.
+"""Google Antigravity (Gemini per-user-quota) transport.
 
-Antigravity fronts the Cloud Code Assist backend (``cloudcode-pa.googleapis.com``).
-Requests are Gemini-native bodies (built by ``gemini_native_adapter.build_gemini_request``)
-wrapped in a CCA envelope::
+Antigravity lets users bring their own Google Antigravity / Gemini
+subscription into Hermes. Under the hood it is the **Gemini API per-user-quota
+flow** (per Google's NTK integration guide): inference goes to
+``generativelanguage.googleapis.com`` using the standard Gemini
+``GenerateContent`` request/response shape, but on the
+``:generateContentPerUserQuota`` variant endpoint and authenticated with the
+user's **Google OAuth access token** (Bearer) instead of a static API key.
+The ``peruserquota`` OAuth scope maps usage to the signed-in user's own quota.
 
-    {
-      "project": "<cloudaicompanionProject>",
-      "model": "<model-id>",
-      "request": { contents, systemInstruction, generationConfig, tools, ... },
-      "requestType": "agent",
-      "userAgent": "antigravity",
-      "requestId": "agent-<timestamp>-<random>"
-    }
-
-Auth is a **Bearer** Google OAuth access token (the user's Antigravity
-subscription), NOT the ``x-goog-api-key`` AI Studio key the ``gemini`` provider
-uses.  The ``cloudaicompanionProject`` is resolved once per token via
-``v1internal:loadCodeAssist`` and cached for the client's lifetime.
+This is a thin overlay on the Gemini native adapter (``gemini_native_adapter``),
+reusing its message/tool translation and stream handling wholesale. The only
+differences from the plain ``gemini`` provider are:
+  - auth = Bearer OAuth token (the user's Google access token), not API key
+  - endpoint = ``...:generateContentPerUserQuota`` (non-stream) /
+    ``...:streamGenerateContentPerUserQuota`` (stream)
+  - base = ``https://generativelanguage.googleapis.com/v1alpha``
 
 The class mirrors ``GeminiNativeClient``'s OpenAI-SDK-compatible facade
 (``chat.completions.create`` + ``.stream()``) so it drops into the same
-transport seams, and reuses the gemini adapter's message/tool translation and
-stream translation wholesale.
-
-NOTE — endpoint paths and response envelope are reverse-engineered from the
-public Antigravity ecosystem and MUST be re-verified against a live
-credentials session (or Google's official docs once the client is issued)
-before this ships.  They are isolated in the module constants below so a
-correction is a one-line change.
+transport seams, and is constructed by the same ``agent_runtime_helpers`` seam.
 """
 
 from __future__ import annotations
 
 import logging
-import random
-import time
-import uuid
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, Optional
 
 import httpx
 
-from agent.bounded_response import read_streaming_error_body
 from agent.gemini_native_adapter import (
     GeminiNativeClient,
     _GeminiStreamChunk,
-    _iter_sse_events,
     bare_gemini_model_id,
     build_gemini_request,
-    gemini_http_error,
-    translate_gemini_response,
-    translate_stream_event,
-)
-
-# Cloud Code Assist host — single source of truth lives in
-# hermes_cli/antigravity_auth.py so a launch-time host correction is one edit.
-from hermes_cli.antigravity_auth import (
-    ANTIGRAVITY_INFERENCE_BASE_URL as ANTIGRAVITY_CCA_HOST,
 )
 
 logger = logging.getLogger(__name__)
 
-# Cloud Code Assist endpoints.  ``loadCodeAssist`` is well-documented across
-# the ecosystem; the generation endpoints below are the reverse-engineered
-# paths and need live confirmation.
-ANTIGRAVITY_LOAD_ASSIST_PATH = "/v1internal:loadCodeAssist"
-ANTIGRAVITY_STREAM_ASSIST_PATH = "/v1internal:streamCodeAssist"
-ANTIGRAVITY_GENERATE_ASSIST_PATH = "/v1internal:generateCodeAssist"
+# Inference host — single source of truth lives in
+# hermes_cli/antigravity_auth.py so a launch-time host correction is one edit.
+from hermes_cli.antigravity_auth import (  # noqa: E402
+    ANTIGRAVITY_INFERENCE_BASE_URL as ANTIGRAVITY_BASE_URL,
+)
 
-# CCA requires a client-metadata header describing the calling IDE.  These
-# values match the Antigravity CLI's own metadata.
-_CCA_CLIENT_METADATA = {
-    "ideType": "IDE_UNSPECIFIED",
-    "platform": "PLATFORM_UNSPECIFIED",
-    "pluginType": "GEMINI",
-}
-
-
-def _cca_request_id() -> str:
-    """Return a CCA requestId: ``agent-<unix_ms>-<random>``."""
-    return f"agent-{int(time.time() * 1000)}-{uuid.uuid4().hex[:12]}"
+# Per-user-quota variant endpoints (Gemini API).  The non-stream variant is
+# from Google's NTK guide; the stream variant follows the native
+# ``:streamGenerateContent`` naming convention and is kept as a constant so a
+# correction is one line.
+ANTIGRAVITY_GENERATE_PATH = ":generateContentPerUserQuota"
+ANTIGRAVITY_STREAM_PATH = ":streamGenerateContentPerUserQuota"
 
 
 def build_antigravity_request(
     *,
-    project: str,
     model: str,
-    messages: List[Dict[str, Any]],
+    messages: list[Dict[str, Any]],
     tools: Any = None,
     tool_choice: Any = None,
     temperature: Optional[float] = None,
@@ -93,10 +63,14 @@ def build_antigravity_request(
     top_p: Optional[float] = None,
     stop: Any = None,
     thinking_config: Any = None,
-    request_type: str = "agent",
 ) -> Dict[str, Any]:
-    """Wrap a Gemini-native request body in the Cloud Code Assist envelope."""
-    inner = build_gemini_request(
+    """Build a standard Gemini request body for the per-user-quota endpoint.
+
+    Identical to ``build_gemini_request`` (the per-user-quota endpoint takes
+    the standard ``GenerateContent`` body); this wrapper exists so the adapter
+    has a single, explicit construction point and a stable name.
+    """
+    return build_gemini_request(
         messages=messages,
         tools=tools,
         tool_choice=tool_choice,
@@ -106,22 +80,14 @@ def build_antigravity_request(
         stop=stop,
         thinking_config=thinking_config,
     )
-    return {
-        "project": project,
-        "model": bare_gemini_model_id(model),
-        "request": inner,
-        "requestType": request_type,
-        "userAgent": "antigravity",
-        "requestId": _cca_request_id(),
-    }
 
 
 class AntigravityClient:
-    """OpenAI-SDK-compatible facade over the Antigravity / CCA REST API.
+    """OpenAI-SDK-compatible facade over the Gemini per-user-quota API.
 
-    Mirrors ``GeminiNativeClient``'s surface (``chat.completions.create``,
-    ``chat.completions.stream``) so it can be constructed by the same
-    ``agent_runtime_helpers`` seam the Gemini native client uses.
+    Auth is a **Bearer** Google OAuth access token (the user's Antigravity
+    subscription), not an API key. Reuses the Gemini native adapter's
+    translation wholesale; only the auth and endpoint differ.
     """
 
     def __init__(
@@ -132,7 +98,6 @@ class AntigravityClient:
         default_headers: Optional[Dict[str, str]] = None,
         timeout: Any = None,
         http_client: Optional[httpx.Client] = None,
-        project: Optional[str] = None,
         **_: Any,
     ) -> None:
         if not (api_key or "").strip():
@@ -141,14 +106,13 @@ class AntigravityClient:
                 "provided. Run `hermes auth add antigravity` to sign in."
             )
         self.api_key = api_key
-        self.base_url = (base_url or ANTIGRAVITY_CCA_HOST).rstrip("/")
+        self.base_url = (base_url or ANTIGRAVITY_BASE_URL).rstrip("/")
         self._default_headers = dict(default_headers or {})
         self._http = http_client or httpx.Client(
             timeout=timeout
             or httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0)
         )
         self.is_closed = False
-        self._project: Optional[str] = project
         self.chat = _AntigravityChatNamespace(self)
 
     def close(self) -> None:
@@ -171,45 +135,15 @@ class AntigravityClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
             "Authorization": f"Bearer {self.api_key}",
-            "Client-Metadata": _json_compact(_CCA_CLIENT_METADATA),
         }
         headers.update(self._default_headers)
         return headers
 
-    def _resolve_project(self, *, timeout: Any = None) -> str:
-        """Resolve the ``cloudaicompanionProject`` via loadCodeAssist (cached)."""
-        if self._project:
-            return self._project
-        url = f"{self.base_url}{ANTIGRAVITY_LOAD_ASSIST_PATH}"
-        response = self._http.post(
-            url,
-            json={"metadata": _CCA_CLIENT_METADATA},
-            headers=self._headers(),
-            timeout=timeout,
-        )
-        if response.status_code != 200:
-            raise gemini_http_error(response)
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise RuntimeError(
-                f"Invalid JSON from Antigravity loadCodeAssist: {exc}"
-            ) from exc
-        project = str(payload.get("cloudaicompanionProject") or "").strip()
-        if not project:
-            raise RuntimeError(
-                "Antigravity loadCodeAssist returned no cloudaicompanionProject; "
-                "the account may not have Antigravity access."
-            )
-        self._project = project
-        logger.debug("Antigravity project resolved: %s", project)
-        return project
-
     def _create_chat_completion(
         self,
         *,
-        model: str = "gemini-3.5-pro",
-        messages: Optional[List[Dict[str, Any]]] = None,
+        model: str = "gemini-2.5-flash",
+        messages: Optional[list[Dict[str, Any]]] = None,
         stream: bool = False,
         tools: Any = None,
         tool_choice: Any = None,
@@ -227,9 +161,7 @@ class AntigravityClient:
                 "thinkingConfig"
             )
 
-        project = self._resolve_project(timeout=timeout)
-        envelope = build_antigravity_request(
-            project=project,
+        body = build_antigravity_request(
             model=model,
             messages=messages or [],
             tools=tools,
@@ -243,83 +175,58 @@ class AntigravityClient:
 
         if stream:
             return self._stream_completion(
-                model=model, envelope=envelope, timeout=timeout
+                model=model, body=body, timeout=timeout
             )
 
-        url = f"{self.base_url}{ANTIGRAVITY_GENERATE_ASSIST_PATH}"
+        url = f"{self.base_url}/models/{bare_gemini_model_id(model)}{ANTIGRAVITY_GENERATE_PATH}"
         response = self._http.post(
-            url, json=envelope, headers=self._headers(), timeout=timeout
+            url, json=body, headers=self._headers(), timeout=timeout
         )
         if response.status_code != 200:
+            from agent.gemini_native_adapter import gemini_http_error
+
             raise gemini_http_error(response)
         try:
             payload = response.json()
         except ValueError as exc:
             raise RuntimeError(f"Invalid JSON from Antigravity API: {exc}") from exc
-        return _unwrap_cca_response(payload, model=model)
+
+        from agent.gemini_native_adapter import translate_gemini_response
+
+        return translate_gemini_response(payload, model=model)
 
     def _stream_completion(
-        self, *, model: str, envelope: Dict[str, Any], timeout: Any = None
+        self, *, model: str, body: Dict[str, Any], timeout: Any = None
     ) -> Iterator[_GeminiStreamChunk]:
-        url = f"{self.base_url}{ANTIGRAVITY_STREAM_ASSIST_PATH}"
+        from agent.bounded_response import read_streaming_error_body
+        from agent.gemini_native_adapter import (
+            _iter_sse_events,
+            gemini_http_error,
+            translate_stream_event,
+        )
+
+        url = f"{self.base_url}/models/{bare_gemini_model_id(model)}{ANTIGRAVITY_STREAM_PATH}"
         stream_headers = dict(self._headers())
         stream_headers["Accept"] = "text/event-stream"
 
         def _generator() -> Iterator[_GeminiStreamChunk]:
             try:
                 with self._http.stream(
-                    "POST", url, json=envelope, headers=stream_headers, timeout=timeout
+                    "POST", url, json=body, headers=stream_headers, timeout=timeout
                 ) as response:
                     if response.status_code != 200:
                         body_text = read_streaming_error_body(response)
                         raise gemini_http_error(response, body_text=body_text)
                     tool_call_indices: Dict[str, Dict[str, Any]] = {}
                     for event in _iter_sse_events(response):
-                        payload = _unwrap_cca_stream_event(event, model)
                         for chunk in translate_stream_event(
-                            payload, model, tool_call_indices
+                            event, model, tool_call_indices
                         ):
                             yield chunk
             finally:
                 pass
 
         return _generator()
-
-
-def _json_compact(obj: Dict[str, Any]) -> str:
-    """Serialize client-metadata as compact JSON without spaces."""
-    import json
-
-    return json.dumps(obj, separators=(",", ":"))
-
-
-def _unwrap_cca_response(payload: Dict[str, Any], *, model: str) -> Any:
-    """Extract the Gemini-shaped response body from a CCA response.
-
-    CCA may return the Gemini body directly or wrapped under a key (observed
-    variants: ``request``/``response``/``result``).  Unwrap defensively; the
-    exact shape needs live confirmation.
-    """
-    for key in ("response", "request", "result"):
-        if isinstance(payload, dict) and isinstance(payload.get(key), dict):
-            candidate = payload[key]
-            if "candidates" in candidate or "contents" in candidate:
-                return translate_gemini_response(candidate, model=model)
-    return translate_gemini_response(payload, model=model)
-
-
-def _unwrap_cca_stream_event(event: Dict[str, Any], model: str) -> Dict[str, Any]:
-    """Extract the Gemini-shaped event body from a CCA stream event.
-
-    SSE events from CCA carry the Gemini chunk either at top level or under
-    a wrapper key; normalize before handing to translate_stream_event.
-    """
-    for key in ("response", "request", "result", "data"):
-        if isinstance(event, dict) and isinstance(event.get(key), dict):
-            candidate = event[key]
-            if "candidates" in candidate or "candidatesChunk" in candidate:
-                return candidate
-    return event
 
 
 class _AntigravityChatCompletions:
@@ -343,5 +250,5 @@ class _AntigravityChatNamespace:
 __all__ = [
     "AntigravityClient",
     "build_antigravity_request",
-    "ANTIGRAVITY_CCA_HOST",
+    "ANTIGRAVITY_BASE_URL",
 ]

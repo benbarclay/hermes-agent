@@ -1,13 +1,15 @@
 """Google Antigravity provider profile (pre-release — hidden by default).
 
-Antigravity is Google's consumer coding agent, fronted by the Cloud Code
-Assist backend (``cloudcode-pa.googleapis.com``).  Unlike the ``gemini``
-provider (API key against AI Studio), Antigravity uses **Google account
-OAuth** against the user's own Antigravity subscription.
+Antigravity is Google's consumer coding agent. Under the hood it uses the
+**Gemini API per-user-quota** flow (per Google's integration guide): inference
+goes to ``generativelanguage.googleapis.com`` on the
+``:generateContentPerUserQuota`` endpoint, authenticated with the user's own
+**Google account OAuth** token so usage maps to their Antigravity/Gemini
+subscription quota.
 
 This profile is declarative metadata only — the transport lives in
-``agent/antigravity_adapter.py`` (Cloud Code Assist envelope + Bearer auth
-over the Gemini-native request builder) and the OAuth flow lives in
+``agent/antigravity_adapter.py`` (per-user-quota endpoint + Bearer auth over
+the Gemini-native request builder) and the OAuth flow lives in
 ``hermes_cli/antigravity_auth.py`` (PKCE loopback → NAS-brokered code
 exchange → direct inference).
 
@@ -29,12 +31,13 @@ from providers import register_hidden_provider_gate, register_provider
 from providers.base import ProviderProfile
 
 
-# Cloud Code Assist host — the backend behind Antigravity.  The Gemini-native
-# request body (built by agent/gemini_native_adapter.build_gemini_request) is
-# wrapped in the CCA envelope at this host.  Imported from
+# Inference host — the Gemini per-user-quota backend behind Antigravity.  The
+# standard Gemini request body (built by
+# agent/gemini_native_adapter.build_gemini_request) is sent to the
+# ``:generateContentPerUserQuota`` variant at this host.  Imported from
 # hermes_cli/antigravity_auth.py so the host has a single source of truth.
 from hermes_cli.antigravity_auth import (
-    ANTIGRAVITY_INFERENCE_BASE_URL as ANTIGRAVITY_CCA_BASE_URL,
+    ANTIGRAVITY_INFERENCE_BASE_URL as ANTIGRAVITY_BASE_URL,
 )
 
 # Curated model list shown when live discovery is unavailable.  Must be
@@ -65,10 +68,10 @@ antigravity = AntigravityProfile(
     name="antigravity",
     aliases=("google-antigravity", "antigravity-oauth"),
     display_name="Google Antigravity",
-    description="Google Antigravity (Cloud Code Assist, Google account OAuth)",
+    description="Google Antigravity (Gemini per-user quota, Google account OAuth)",
     api_mode="chat_completions",
     auth_type="oauth_external",
-    base_url=ANTIGRAVITY_CCA_BASE_URL,
+    base_url=ANTIGRAVITY_BASE_URL,
     env_vars=(),
     hidden=True,
     supports_health_check=False,

@@ -54,11 +54,11 @@ ANTIGRAVITY_NAS_EXCHANGE_PATH = "/api/oauth/antigravity/exchange"
 ANTIGRAVITY_NAS_REFRESH_PATH = "/api/oauth/antigravity/refresh"
 ANTIGRAVITY_NAS_CONFIG_PATH = "/api/oauth/antigravity/config"
 
-# Inference base URL — Cloud Code Assist host.  SINGLE SOURCE OF TRUTH for
-# the CCA host: the provider profile (plugins/model-providers/antigravity)
+# Inference base URL — Gemini per-user-quota host.  SINGLE SOURCE OF TRUTH for
+# the inference host: the provider profile (plugins/model-providers/antigravity)
 # and the transport (agent/antigravity_adapter.py) import this constant, so a
 # launch-time host correction is a one-line change in exactly one place.
-ANTIGRAVITY_INFERENCE_BASE_URL = "https://cloudcode-pa.googleapis.com"
+ANTIGRAVITY_INFERENCE_BASE_URL = "https://generativelanguage.googleapis.com/v1alpha"
 
 
 class _AuthError(Exception):

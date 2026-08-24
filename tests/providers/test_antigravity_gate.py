@@ -102,7 +102,7 @@ def test_antigravity_profile_metadata():
 
     prof = get_provider_profile("antigravity")
     assert prof is not None
-    assert "cloudcode-pa.googleapis.com" in (prof.base_url or "")
+    assert "generativelanguage.googleapis.com" in (prof.base_url or "")
     assert prof.env_vars == ()
     assert prof.fallback_models  # curated list present for the picker
     assert prof.supports_health_check is False  # no /models catalog to probe

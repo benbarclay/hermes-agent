@@ -28,7 +28,7 @@ class _FakeNAS:
         self.config_payload = {
             "client_id": "google-client-123",
             "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
-            "scope": "openid email profile https://www.googleapis.com/auth/cloud-code-assist",
+            "scope": "openid email profile https://www.googleapis.com/auth/peruserquota",
         }
         self.exchange_payload = exchange_payload or {
             "access_token": "at-1",
@@ -185,7 +185,7 @@ def test_runtime_resolution_refreshes_via_broker(clean_home, broker_env, monkeyp
     aa._save_antigravity_tokens(tokens)
     creds = aa.resolve_antigravity_runtime_credentials(force_refresh=True)
     assert creds["api_key"] == "at-2"
-    assert creds["base_url"] == "https://cloudcode-pa.googleapis.com"
+    assert creds["base_url"] == "https://generativelanguage.googleapis.com/v1alpha"
     assert creds["api_mode"] == "chat_completions"
     assert creds["provider"] == "antigravity"
 
