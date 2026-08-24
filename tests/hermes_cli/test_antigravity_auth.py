@@ -28,7 +28,7 @@ class _FakeNAS:
         self.config_payload = {
             "client_id": "google-client-123",
             "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
-            "scope": "openid email profile https://www.googleapis.com/auth/peruserquota",
+            "scope": "openid email profile https://www.googleapis.com/auth/generative-language.peruserquota",
         }
         self.exchange_payload = exchange_payload or {
             "access_token": "at-1",
