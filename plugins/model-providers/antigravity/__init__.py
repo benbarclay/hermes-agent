@@ -40,11 +40,14 @@ from hermes_cli.antigravity_auth import (
     ANTIGRAVITY_INFERENCE_BASE_URL as ANTIGRAVITY_BASE_URL,
 )
 
-# Curated model list shown when live discovery is unavailable.  Must be
-# verified against the real Antigravity endpoint before public launch — the
-# served model ids are assigned by Google and are not yet confirmed.
+# Curated model list shown when live discovery is unavailable. Verified
+# against the real per-user-quota endpoint (2026-08): gemini-flash-latest
+# (→ gemini-3.8-flash) and gemini-3.5-flash both return 200; gemini-3.5-pro
+# and gemini-2.5-* are NOT supported on the :generateContentPerUserQuota
+# endpoint (404). The endpoint only serves certain models, so the fallback
+# must use only those verified present.
 ANTIGRAVITY_FALLBACK_MODELS = (
-    "gemini-3.5-pro",
+    "gemini-flash-latest",
     "gemini-3.5-flash",
 )
 

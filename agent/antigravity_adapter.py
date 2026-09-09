@@ -142,7 +142,7 @@ class AntigravityClient:
     def _create_chat_completion(
         self,
         *,
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-flash-latest",
         messages: Optional[list[Dict[str, Any]]] = None,
         stream: bool = False,
         tools: Any = None,
