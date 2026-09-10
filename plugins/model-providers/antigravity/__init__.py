@@ -41,14 +41,19 @@ from hermes_cli.antigravity_auth import (
 )
 
 # Curated model list shown when live discovery is unavailable. Verified
-# against the real per-user-quota endpoint (2026-08): gemini-flash-latest
-# (→ gemini-3.8-flash) and gemini-3.5-flash both return 200; gemini-3.5-pro
-# and gemini-2.5-* are NOT supported on the :generateContentPerUserQuota
-# endpoint (404). The endpoint only serves certain models, so the fallback
-# must use only those verified present.
+# against the real per-user-quota endpoint (2026-09): gemini-3.5-flash,
+# gemini-flash-latest (→ gemini-3.8-flash) and gemini-flash-lite-latest all
+# return 200; gemini-3.5-pro and gemini-2.5-* are NOT supported on the
+# :generateContentPerUserQuota endpoint (404). The endpoint only serves
+# certain models, so the fallback must use only those verified present.
+#
+# Order matters: the first entry is the default. lite is listed last as the
+# reserve — the per-user quota is enforced PER MODEL, so when the flash/pro
+# family is exhausted lite still answers.
 ANTIGRAVITY_FALLBACK_MODELS = (
-    "gemini-flash-latest",
     "gemini-3.5-flash",
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest",
 )
 
 
