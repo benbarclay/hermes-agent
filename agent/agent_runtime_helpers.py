@@ -2300,9 +2300,9 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             )
             return client
     if agent.provider == "antigravity":
-        from agent.antigravity_adapter import AntigravityClient, ANTIGRAVITY_CCA_HOST
+        from agent.antigravity_adapter import AntigravityClient, ANTIGRAVITY_BASE_URL
 
-        base_url = str(client_kwargs.get("base_url", "") or "").rstrip("/") or ANTIGRAVITY_CCA_HOST
+        base_url = str(client_kwargs.get("base_url", "") or "").rstrip("/") or ANTIGRAVITY_BASE_URL
         safe_kwargs = {
             k: v for k, v in client_kwargs.items()
             if k in {"api_key", "base_url", "default_headers", "timeout", "http_client", "project"}

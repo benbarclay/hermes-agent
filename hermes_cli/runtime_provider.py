@@ -1826,6 +1826,32 @@ def resolve_runtime_provider(
                 runtime["requested_provider"] = requested_provider
                 return runtime
 
+    # Antigravity is a hidden (pre-release) OAuth provider deliberately kept
+    # out of PROVIDER_REGISTRY so it never appears in pickers or auth lists.
+    # resolve_provider() validates the name against that registry and would
+    # raise "Unknown provider" before any provider-specific branch could run,
+    # so handle it here — ahead of that call.
+    if str(requested_provider or "").strip().lower() in {
+        "antigravity",
+        "google-antigravity",
+        "antigravity-oauth",
+    }:
+        from hermes_cli.antigravity_auth import (
+            resolve_antigravity_runtime_credentials,
+        )
+
+        creds = resolve_antigravity_runtime_credentials()
+        return {
+            "provider": "antigravity",
+            "api_mode": "chat_completions",
+            "base_url": creds.get("base_url", "").rstrip("/"),
+            "api_key": creds.get("api_key", ""),
+            "source": creds.get("source", "hermes-auth-store"),
+            "last_refresh": creds.get("last_refresh"),
+            "expires_at_ms": creds.get("expires_at_ms"),
+            "requested_provider": requested_provider,
+        }
+
     provider = resolve_provider(
         requested_provider,
         explicit_api_key=explicit_api_key,
@@ -2024,35 +2050,6 @@ def resolve_runtime_provider(
                 "source": creds.get("source", "oauth"),
                 "requested_provider": requested_provider,
             }
-
-    if provider == "antigravity":
-        try:
-            from hermes_cli.antigravity_auth import (
-                antigravity_enabled,
-                resolve_antigravity_runtime_credentials,
-            )
-
-            if not antigravity_enabled():
-                raise AuthError(
-                    "Antigravity is not configured (ANTIGRAVITY_CLIENT_ID unset).",
-                    provider="antigravity",
-                    code="antigravity_not_configured",
-                )
-            creds = resolve_antigravity_runtime_credentials()
-            return {
-                "provider": "antigravity",
-                "api_mode": "chat_completions",
-                "base_url": creds.get("base_url", "").rstrip("/"),
-                "api_key": creds.get("api_key", ""),
-                "source": creds.get("source", "hermes-auth-store"),
-                "last_refresh": creds.get("last_refresh"),
-                "expires_at_ms": creds.get("expires_at_ms"),
-                "requested_provider": requested_provider,
-            }
-        except AuthError:
-            if requested_provider != "auto":
-                raise
-            logger.info("Antigravity credentials failed; falling through to next provider.")
 
     if provider == "copilot-acp":
         creds = resolve_external_process_provider_credentials(provider)
