@@ -205,7 +205,15 @@ class AntigravityClient:
             translate_stream_event,
         )
 
-        url = f"{self.base_url}/models/{bare_gemini_model_id(model)}{ANTIGRAVITY_STREAM_PATH}"
+        # alt=sse is REQUIRED. Without it the per-user-quota stream endpoint
+        # returns a bare JSON array of complete responses (``[{...},{...}]``),
+        # not SSE — ``_iter_sse_events`` finds no ``data:`` lines, yields
+        # nothing, and the caller reports a bogus EmptyStreamError. With it the
+        # response is real ``data: {...}`` SSE, matching the native adapter.
+        url = (
+            f"{self.base_url}/models/{bare_gemini_model_id(model)}"
+            f"{ANTIGRAVITY_STREAM_PATH}?alt=sse"
+        )
         stream_headers = dict(self._headers())
         stream_headers["Accept"] = "text/event-stream"
 

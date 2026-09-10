@@ -31,6 +31,7 @@ class _FakeGeminiPerUserQuota:
 
         self.gen_req = None
         self.stream_req = None
+        self.stream_query: str | None = None
         self.auth_header: str | None = None
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -38,7 +39,10 @@ class _FakeGeminiPerUserQuota:
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 obj = json.loads(body)
                 outer.auth_header = self.headers.get("Authorization")
-                if self.path.endswith(ANTIGRAVITY_GENERATE_PATH):
+                # The stream/serve paths carry a query string (?alt=sse); split
+                # it off before matching and record it as part of the contract.
+                path, _, query = self.path.partition("?")
+                if path.endswith(ANTIGRAVITY_GENERATE_PATH):
                     outer.gen_req = obj
                     payload = {
                         "candidates": [
@@ -52,8 +56,9 @@ class _FakeGeminiPerUserQuota:
                     }
                     self._json(payload)
                     return
-                if self.path.endswith(ANTIGRAVITY_STREAM_PATH):
+                if path.endswith(ANTIGRAVITY_STREAM_PATH):
                     outer.stream_req = obj
+                    outer.stream_query = query
                     # Two SSE events: a text chunk then a finishReason chunk.
                     events = [
                         {
@@ -176,6 +181,9 @@ def test_client_streams_sse(fake_api):
     # Stream request carried the standard body + Bearer auth.
     assert fake_api.stream_req["contents"][0]["parts"][0]["text"] == "hi"
     assert fake_api.auth_header == "Bearer test-oauth-token"
+    # alt=sse is required: without it the endpoint returns a bare JSON array
+    # instead of SSE and the stream yields nothing (EmptyStreamError).
+    assert fake_api.stream_query == "alt=sse"
 
 
 def test_inference_base_url_single_source_of_truth():
