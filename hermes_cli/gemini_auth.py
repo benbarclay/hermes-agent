@@ -13,13 +13,14 @@ subscription).  The flow:
    model as xai-oauth / qwen-oauth), and refreshed through the NAS broker
    whenever the access token nears expiry.
 
-Inference traffic goes DIRECT from Hermes to ``cloudcode-pa.googleapis.com``
-with the access token — NAS is out of the prompt path entirely.
+Inference traffic goes DIRECT from Hermes to
+``generativelanguage.googleapis.com`` (the Gemini per-user-quota endpoint) with
+the access token — NAS is out of the prompt path entirely.
 
-Secret-launch mechanics: the whole module is inert unless
-``GEMINI_AUTH_CLIENT_ID`` is present (see ``gemini_auth_enabled``).  Nothing
-in the CLI advertises the provider; ``hermes auth add gemini-auth`` accepts
-the name only when enabled, and it never appears in pickers or auth lists.
+Secret-launch mechanics: the provider is `hidden=True` (out of pickers and auth
+lists) but enabled by default once a logged-in Nous user has a reachable NAS
+broker; ``hermes auth add gemini-auth`` surfaces it.  The module defers to the
+single auth-side gate ``gemini_auth_enabled`` (see that function).
 """
 
 from __future__ import annotations
