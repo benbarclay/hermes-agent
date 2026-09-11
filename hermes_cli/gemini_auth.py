@@ -25,6 +25,8 @@ single auth-side gate ``gemini_auth_enabled`` (see that function).
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
 import os
 import secrets
@@ -399,13 +401,15 @@ def _fetch_gemini_auth_config(*, timeout: float = 30.0) -> Dict[str, Any]:
 
 
 def _gemini_auth_pkce_pair() -> tuple[str, str, str]:
-    """Return (code_verifier, code_challenge, state)."""
-    from hermes_cli.auth import _oauth_pkce_code_challenge, _oauth_pkce_code_verifier
+    """Return (code_verifier, code_challenge_S256, state) for the Gemini Auth login.
 
-    verifier = _oauth_pkce_code_verifier()
-    challenge = _oauth_pkce_code_challenge(verifier)
-    state = secrets.token_urlsafe(24)
-    return verifier, challenge, state
+    Self-contained rather than shared: PKCE generation is per-provider on this tree (see
+    ``auth_minimax._minimax_pkce_pair`` / ``auth_spotify._spotify_code_verifier``), and this module
+    must stay light-importable during provider discovery.
+    """
+    verifier = secrets.token_urlsafe(64)[:96]
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    return verifier, challenge, secrets.token_urlsafe(24)
 
 
 def _make_gemini_auth_callback_handler(

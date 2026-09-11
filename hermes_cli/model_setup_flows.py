@@ -465,10 +465,10 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
 
 def _model_flow_gemini_auth(config, current_model="", args=None):
     """Gemini Auth provider: ensure logged in, then pick model."""
-    from hermes_cli.auth import (
-        get_gemini_auth_status, resolve_gemini_auth_runtime_credentials, AuthError,
-        format_auth_error, _prompt_model_selection)
-    from hermes_cli.gemini_auth import GEMINI_AUTH_INFERENCE_BASE_URL, _login_gemini_auth
+    from hermes_cli.auth import AuthError, format_auth_error, _prompt_model_selection
+    from hermes_cli.gemini_auth import (
+        GEMINI_AUTH_INFERENCE_BASE_URL, _login_gemini_auth, get_gemini_auth_status,
+        resolve_gemini_auth_runtime_credentials)
 
     if not get_gemini_auth_status().get("logged_in"):
         _say("Not logged into Gemini Auth. Starting OAuth login...", "")
