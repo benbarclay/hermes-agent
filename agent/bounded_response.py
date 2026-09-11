@@ -31,7 +31,7 @@ cancels the read) and return whatever partial bytes were collected.
 
 Ported and adapted from openclaw/openclaw#95108 ("bound Anthropic error
 streams"), generalized to cover Hermes's streaming error-body sites
-(native Gemini and the Antigravity / Cloud Code Assist transport).
+(native Gemini and the Gemini Auth / Cloud Code Assist transport).
 """
 
 from __future__ import annotations

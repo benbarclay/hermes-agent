@@ -1,10 +1,10 @@
-"""Tests for the Antigravity provider gate.
+"""Tests for the Gemini Auth provider gate.
 
 With NAS owning the Google client config, the provider is enabled by default
 (no local client_id gate). Verifies:
- 1. The antigravity profile is present in list_providers() by default.
+ 1. The gemini-auth profile is present in list_providers() by default.
  2. It resolves by name via get_provider_profile() for explicit
-    ``model.provider: antigravity`` config.
+    ``model.provider: gemini-auth`` config.
  3. The profile's auth_type is oauth_external so it is handled as an OAuth
     provider.
 """
@@ -37,70 +37,70 @@ def _clear_provider_caches():
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.delenv("ANTIGRAVITY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GEMINI_AUTH_CLIENT_ID", raising=False)
     _clear_provider_caches()
     yield
     _clear_provider_caches()
 
 
-def test_antigravity_surfaced_by_default():
+def test_gemini_auth_surfaced_by_default():
     """The provider is enabled by default (no local client_id gate)."""
     from providers import list_providers
 
     names = {p.name for p in list_providers()}
-    assert "antigravity" in names
+    assert "gemini-auth" in names
 
 
-def test_antigravity_resolves_by_name():
+def test_gemini_auth_resolves_by_name():
     """get_provider_profile() resolves the profile for explicit config."""
     from providers import get_provider_profile
 
-    prof = get_provider_profile("antigravity")
+    prof = get_provider_profile("gemini-auth")
     assert prof is not None
-    assert prof.name == "antigravity"
+    assert prof.name == "gemini-auth"
     assert prof.auth_type == "oauth_external"  # OAuth-handled provider
 
 
-def test_antigravity_surfaced_when_configured(monkeypatch):
-    """Regardless of ANTIGRAVITY_CLIENT_ID, the provider is surfaced."""
-    monkeypatch.setenv("ANTIGRAVITY_CLIENT_ID", "test-client-id-123")
+def test_gemini_auth_surfaced_when_configured(monkeypatch):
+    """Regardless of GEMINI_AUTH_CLIENT_ID, the provider is surfaced."""
+    monkeypatch.setenv("GEMINI_AUTH_CLIENT_ID", "test-client-id-123")
     from providers import list_providers
 
     names = {p.name for p in list_providers()}
-    assert "antigravity" in names
+    assert "gemini-auth" in names
 
 
-def test_antigravity_surfaced_via_dotenv_only(tmp_path, monkeypatch):
+def test_gemini_auth_surfaced_via_dotenv_only(tmp_path, monkeypatch):
     """A credential in ~/.hermes/.env still surfaces the provider."""
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir(parents=True)
-    (hermes_home / ".env").write_text("ANTIGRAVITY_CLIENT_ID=dotenv-client-id\n")
+    (hermes_home / ".env").write_text("GEMINI_AUTH_CLIENT_ID=dotenv-client-id\n")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.delenv("ANTIGRAVITY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GEMINI_AUTH_CLIENT_ID", raising=False)
 
     from providers import list_providers
 
     names = {p.name for p in list_providers()}
-    assert "antigravity" in names
+    assert "gemini-auth" in names
 
-    from hermes_cli.antigravity_auth import antigravity_enabled
+    from hermes_cli.gemini_auth import gemini_auth_enabled
 
-    assert antigravity_enabled() is True  # auth gate agrees with discovery
+    assert gemini_auth_enabled() is True  # auth gate agrees with discovery
 
 
-def test_antigravity_visible_with_include_hidden():
+def test_gemini_auth_visible_with_include_hidden():
     """include_hidden=True still includes it."""
     from providers import list_providers
 
     names = {p.name for p in list_providers(include_hidden=True)}
-    assert "antigravity" in names
+    assert "gemini-auth" in names
 
 
-def test_antigravity_profile_metadata():
+def test_gemini_auth_profile_metadata():
     """Profile carries the right endpoints and fallback models."""
     from providers import get_provider_profile
 
-    prof = get_provider_profile("antigravity")
+    prof = get_provider_profile("gemini-auth")
     assert prof is not None
     assert "generativelanguage.googleapis.com" in (prof.base_url or "")
     assert prof.env_vars == ()

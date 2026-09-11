@@ -1,4 +1,4 @@
-"""Tests for the Antigravity OAuth flow (PKCE loopback, NAS-brokered exchange).
+"""Tests for the Gemini Auth OAuth flow (PKCE loopback, NAS-brokered exchange).
 
 Verifies the enable gate, PKCE pair generation, token store round-trip,
 NAS exchange/refresh contract, runtime resolution, and the login flow
@@ -16,7 +16,7 @@ from unittest import mock
 
 import pytest
 
-import hermes_cli.antigravity_auth as aa
+import hermes_cli.gemini_auth as aa
 
 
 class _FakeNAS:
@@ -44,7 +44,7 @@ class _FakeNAS:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
-                if self.path == aa.ANTIGRAVITY_NAS_CONFIG_PATH:
+                if self.path == aa.GEMINI_AUTH_NAS_CONFIG_PATH:
                     data = json.dumps(outer.config_payload).encode()
                     self.send_response(200)
                     self.send_header("Content-Type", "application/json")
@@ -58,10 +58,10 @@ class _FakeNAS:
             def do_POST(self):  # noqa: N802
                 body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 obj = json.loads(body)
-                if self.path == aa.ANTIGRAVITY_NAS_EXCHANGE_PATH:
+                if self.path == aa.GEMINI_AUTH_NAS_EXCHANGE_PATH:
                     outer.exchange_body = obj
                     payload = outer.exchange_payload
-                elif self.path == aa.ANTIGRAVITY_NAS_REFRESH_PATH:
+                elif self.path == aa.GEMINI_AUTH_NAS_REFRESH_PATH:
                     outer.refresh_body = obj
                     payload = outer.refresh_payload
                 else:
@@ -103,7 +103,7 @@ def fake_nas():
 @pytest.fixture
 def broker_env(fake_nas, monkeypatch):
     """Point the broker at the fake NAS and skip the HTTPS guard (test-only)."""
-    monkeypatch.setattr(aa, "antigravity_nas_base_url", lambda: fake_nas.base_url)
+    monkeypatch.setattr(aa, "gemini_auth_nas_base_url", lambda: fake_nas.base_url)
     monkeypatch.setattr(aa, "_validate_broker_url", lambda url: url.rstrip("/"))
     # NAS broker calls require a valid Nous token; provide a fake one.
     monkeypatch.setattr(
@@ -121,18 +121,18 @@ def clean_home(tmp_path, monkeypatch):
 def test_enable_gate(monkeypatch):
     # Provider is enabled by default; no local client_id gate anymore
     # (NAS owns the Google client config, discovered at login).
-    monkeypatch.delenv("ANTIGRAVITY_CLIENT_ID", raising=False)
-    assert aa.antigravity_enabled() is True
+    monkeypatch.delenv("GEMINI_AUTH_CLIENT_ID", raising=False)
+    assert aa.gemini_auth_enabled() is True
 
 
 def test_client_id_comes_from_nas_discovery(monkeypatch):
     # The login flow fetches client config from NAS discovery, not local env.
-    monkeypatch.delenv("ANTIGRAVITY_CLIENT_ID", raising=False)
-    assert hasattr(aa, "_fetch_antigravity_config")
+    monkeypatch.delenv("GEMINI_AUTH_CLIENT_ID", raising=False)
+    assert hasattr(aa, "_fetch_gemini_auth_config")
 
 
 def test_pkce_pair_shape():
-    verifier, challenge, state = aa._antigravity_pkce_pair()
+    verifier, challenge, state = aa._gemini_auth_pkce_pair()
     assert verifier and challenge and state
     assert "." not in challenge  # base64url, no padding
     assert len(verifier) >= 43
@@ -154,15 +154,15 @@ def test_exchange_contract(broker_env, fake_nas):
 
 
 def test_token_store_round_trip(clean_home, monkeypatch):
-    monkeypatch.setenv("ANTIGRAVITY_CLIENT_ID", "client-123")
+    monkeypatch.setenv("GEMINI_AUTH_CLIENT_ID", "client-123")
     tokens = {
         "access_token": "at-1",
         "refresh_token": "rt-1",
         "token_type": "Bearer",
         "expires_in": 3600,
     }
-    aa._save_antigravity_tokens(tokens, redirect_uri="http://127.0.0.1:9999/cb")
-    stored = aa._read_antigravity_tokens()
+    aa._save_gemini_auth_tokens(tokens, redirect_uri="http://127.0.0.1:9999/cb")
+    stored = aa._read_gemini_auth_tokens()
     assert stored["tokens"]["access_token"] == "at-1"
     assert stored["redirect_uri"] == "http://127.0.0.1:9999/cb"
     assert stored["auth_mode"] == "oauth_pkce"
@@ -175,27 +175,27 @@ def test_refresh_contract(broker_env, fake_nas):
 
 
 def test_runtime_resolution_refreshes_via_broker(clean_home, broker_env, monkeypatch):
-    monkeypatch.setenv("ANTIGRAVITY_CLIENT_ID", "client-123")
+    monkeypatch.setenv("GEMINI_AUTH_CLIENT_ID", "client-123")
     tokens = {
         "access_token": "at-1",
         "refresh_token": "rt-1",
         "token_type": "Bearer",
         "expires_in": 3600,
     }
-    aa._save_antigravity_tokens(tokens)
-    creds = aa.resolve_antigravity_runtime_credentials(force_refresh=True)
+    aa._save_gemini_auth_tokens(tokens)
+    creds = aa.resolve_gemini_auth_runtime_credentials(force_refresh=True)
     assert creds["api_key"] == "at-2"
     assert creds["base_url"] == "https://generativelanguage.googleapis.com/v1alpha"
     assert creds["api_mode"] == "chat_completions"
-    assert creds["provider"] == "antigravity"
+    assert creds["provider"] == "gemini-auth"
 
 
 def test_login_flow(clean_home, broker_env, monkeypatch):
     """End-to-end login: PKCE pair → loopback callback → NAS exchange → store."""
-    monkeypatch.setenv("ANTIGRAVITY_CLIENT_ID", "client-123")
+    monkeypatch.setenv("GEMINI_AUTH_CLIENT_ID", "client-123")
 
     state_holder: dict = {}
-    real_pair = aa._antigravity_pkce_pair
+    real_pair = aa._gemini_auth_pkce_pair
 
     def fake_pair():
         v, c, s = real_pair()
@@ -211,17 +211,17 @@ def test_login_flow(clean_home, broker_env, monkeypatch):
 
     args = SimpleNamespace(no_browser=True, timeout=30.0)
     with (
-        mock.patch.object(aa, "_antigravity_pkce_pair", fake_pair),
+        mock.patch.object(aa, "_gemini_auth_pkce_pair", fake_pair),
         mock.patch.object(aa, "_wait_for_loopback_callback", fake_wait),
     ):
-        aa._login_antigravity(args, None)
+        aa._login_gemini_auth(args, None)
 
-    creds = aa.resolve_antigravity_runtime_credentials(refresh_if_expiring=False)
+    creds = aa.resolve_gemini_auth_runtime_credentials(refresh_if_expiring=False)
     assert creds["api_key"] == "at-1"
 
 
 def test_login_rejects_state_mismatch(clean_home, broker_env, monkeypatch):
-    monkeypatch.setenv("ANTIGRAVITY_CLIENT_ID", "client-123")
+    monkeypatch.setenv("GEMINI_AUTH_CLIENT_ID", "client-123")
 
     def fake_wait(port, path, *, timeout_seconds=180.0):
         return {"code": "x", "state": "wrong-state", "error": None}
@@ -229,12 +229,12 @@ def test_login_rejects_state_mismatch(clean_home, broker_env, monkeypatch):
     args = SimpleNamespace(no_browser=True, timeout=30.0)
     with mock.patch.object(aa, "_wait_for_loopback_callback", fake_wait):
         with pytest.raises(aa._AuthError, match="state mismatch"):
-            aa._login_antigravity(args, None)
+            aa._login_gemini_auth(args, None)
 
 
 def test_status_reflects_gate(monkeypatch):
-    monkeypatch.delenv("ANTIGRAVITY_CLIENT_ID", raising=False)
-    status = aa.get_antigravity_auth_status()
+    monkeypatch.delenv("GEMINI_AUTH_CLIENT_ID", raising=False)
+    status = aa.get_gemini_auth_status()
     # Provider is always configured now (NAS owns the client config); logged_in
     # reflects whether tokens are stored.
     assert status["logged_in"] is False
@@ -245,14 +245,14 @@ def test_runtime_resolution_quarantines_on_terminal_refresh_failure(
     clean_home, monkeypatch
 ):
     """A terminal refresh failure clears dead tokens and marks relogin required."""
-    monkeypatch.setenv("ANTIGRAVITY_CLIENT_ID", "client-123")
+    monkeypatch.setenv("GEMINI_AUTH_CLIENT_ID", "client-123")
     tokens = {
         "access_token": "at-1",  # not a JWT → would not auto-refresh; use force
         "refresh_token": "rt-expired",
         "token_type": "Bearer",
         "expires_in": 3600,
     }
-    aa._save_antigravity_tokens(tokens)
+    aa._save_gemini_auth_tokens(tokens)
 
     # Make the broker return a 400 invalid_grant on refresh.
     class _FailingNAS:
@@ -283,7 +283,7 @@ def test_runtime_resolution_quarantines_on_terminal_refresh_failure(
             self.server.server_close()
 
     nas = _FailingNAS()
-    monkeypatch.setattr(aa, "antigravity_nas_base_url", lambda: nas.base_url)
+    monkeypatch.setattr(aa, "gemini_auth_nas_base_url", lambda: nas.base_url)
     monkeypatch.setattr(aa, "_validate_broker_url", lambda url: url.rstrip("/"))
     monkeypatch.setattr(
         aa, "_nous_bearer_header", lambda: {"Authorization": "Bearer fake-nous-token"}
@@ -292,10 +292,10 @@ def test_runtime_resolution_quarantines_on_terminal_refresh_failure(
     from hermes_cli.auth import AuthError
 
     with pytest.raises(AuthError) as excinfo:
-        aa.resolve_antigravity_runtime_credentials(force_refresh=True)
+        aa.resolve_gemini_auth_runtime_credentials(force_refresh=True)
     assert excinfo.value.relogin_required is True
     nas.close()
 
     # Dead tokens cleared from the store → next resolution fails fast.
-    creds = aa.resolve_antigravity_runtime_credentials()
+    creds = aa.resolve_gemini_auth_runtime_credentials()
     assert creds["api_key"] == ""  # quarantined: no usable token remains

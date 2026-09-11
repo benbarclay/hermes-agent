@@ -1,6 +1,6 @@
-"""Google Antigravity (Gemini per-user-quota) transport.
+"""Gemini Auth (Gemini per-user-quota) transport.
 
-Antigravity lets users bring their own Google Antigravity / Gemini
+Gemini Auth lets users bring their own Gemini Auth / Gemini
 subscription into Hermes. Under the hood it is the **Gemini API per-user-quota
 flow** (per Google's NTK integration guide): inference goes to
 ``generativelanguage.googleapis.com`` using the standard Gemini
@@ -39,20 +39,20 @@ from agent.gemini_native_adapter import (
 logger = logging.getLogger(__name__)
 
 # Inference host — single source of truth lives in
-# hermes_cli/antigravity_auth.py so a launch-time host correction is one edit.
-from hermes_cli.antigravity_auth import (  # noqa: E402
-    ANTIGRAVITY_INFERENCE_BASE_URL as ANTIGRAVITY_BASE_URL,
+# hermes_cli/gemini_auth.py so a launch-time host correction is one edit.
+from hermes_cli.gemini_auth import (  # noqa: E402
+    GEMINI_AUTH_INFERENCE_BASE_URL as GEMINI_AUTH_BASE_URL,
 )
 
 # Per-user-quota variant endpoints (Gemini API).  The non-stream variant is
 # from Google's NTK guide; the stream variant follows the native
 # ``:streamGenerateContent`` naming convention and is kept as a constant so a
 # correction is one line.
-ANTIGRAVITY_GENERATE_PATH = ":generateContentPerUserQuota"
-ANTIGRAVITY_STREAM_PATH = ":streamGenerateContentPerUserQuota"
+GEMINI_AUTH_GENERATE_PATH = ":generateContentPerUserQuota"
+GEMINI_AUTH_STREAM_PATH = ":streamGenerateContentPerUserQuota"
 
 
-def build_antigravity_request(
+def build_gemini_auth_request(
     *,
     model: str,
     messages: list[Dict[str, Any]],
@@ -82,10 +82,10 @@ def build_antigravity_request(
     )
 
 
-class AntigravityClient:
+class GeminiAuthClient:
     """OpenAI-SDK-compatible facade over the Gemini per-user-quota API.
 
-    Auth is a **Bearer** Google OAuth access token (the user's Antigravity
+    Auth is a **Bearer** Google OAuth access token (the user's Gemini Auth
     subscription), not an API key. Reuses the Gemini native adapter's
     translation wholesale; only the auth and endpoint differ.
     """
@@ -102,18 +102,18 @@ class AntigravityClient:
     ) -> None:
         if not (api_key or "").strip():
             raise RuntimeError(
-                "Antigravity client requires an OAuth access token, but none was "
-                "provided. Run `hermes auth add antigravity` to sign in."
+                "Gemini Auth client requires an OAuth access token, but none was "
+                "provided. Run `hermes auth add gemini-auth` to sign in."
             )
         self.api_key = api_key
-        self.base_url = (base_url or ANTIGRAVITY_BASE_URL).rstrip("/")
+        self.base_url = (base_url or GEMINI_AUTH_BASE_URL).rstrip("/")
         self._default_headers = dict(default_headers or {})
         self._http = http_client or httpx.Client(
             timeout=timeout
             or httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0)
         )
         self.is_closed = False
-        self.chat = _AntigravityChatNamespace(self)
+        self.chat = _GeminiAuthChatNamespace(self)
 
     def close(self) -> None:
         self.is_closed = True
@@ -122,7 +122,7 @@ class AntigravityClient:
         except Exception:
             pass
 
-    def __enter__(self) -> "AntigravityClient":
+    def __enter__(self) -> "GeminiAuthClient":
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -161,7 +161,7 @@ class AntigravityClient:
                 "thinkingConfig"
             )
 
-        body = build_antigravity_request(
+        body = build_gemini_auth_request(
             model=model,
             messages=messages or [],
             tools=tools,
@@ -178,7 +178,7 @@ class AntigravityClient:
                 model=model, body=body, timeout=timeout
             )
 
-        url = f"{self.base_url}/models/{bare_gemini_model_id(model)}{ANTIGRAVITY_GENERATE_PATH}"
+        url = f"{self.base_url}/models/{bare_gemini_model_id(model)}{GEMINI_AUTH_GENERATE_PATH}"
         response = self._http.post(
             url, json=body, headers=self._headers(), timeout=timeout
         )
@@ -189,7 +189,7 @@ class AntigravityClient:
         try:
             payload = response.json()
         except ValueError as exc:
-            raise RuntimeError(f"Invalid JSON from Antigravity API: {exc}") from exc
+            raise RuntimeError(f"Invalid JSON from Gemini Auth API: {exc}") from exc
 
         from agent.gemini_native_adapter import translate_gemini_response
 
@@ -212,7 +212,7 @@ class AntigravityClient:
         # response is real ``data: {...}`` SSE, matching the native adapter.
         url = (
             f"{self.base_url}/models/{bare_gemini_model_id(model)}"
-            f"{ANTIGRAVITY_STREAM_PATH}?alt=sse"
+            f"{GEMINI_AUTH_STREAM_PATH}?alt=sse"
         )
         stream_headers = dict(self._headers())
         stream_headers["Accept"] = "text/event-stream"
@@ -237,10 +237,10 @@ class AntigravityClient:
         return _generator()
 
 
-class _AntigravityChatCompletions:
+class _GeminiAuthChatCompletions:
     """``client.chat.completions`` namespace (sync)."""
 
-    def __init__(self, client: AntigravityClient) -> None:
+    def __init__(self, client: GeminiAuthClient) -> None:
         self._client = client
 
     def create(self, **kwargs: Any) -> Any:
@@ -250,13 +250,13 @@ class _AntigravityChatCompletions:
         return self._client._create_chat_completion(stream=True, **kwargs)
 
 
-class _AntigravityChatNamespace:
-    def __init__(self, client: AntigravityClient) -> None:
-        self.completions = _AntigravityChatCompletions(client)
+class _GeminiAuthChatNamespace:
+    def __init__(self, client: GeminiAuthClient) -> None:
+        self.completions = _GeminiAuthChatCompletions(client)
 
 
 __all__ = [
-    "AntigravityClient",
-    "build_antigravity_request",
-    "ANTIGRAVITY_BASE_URL",
+    "GeminiAuthClient",
+    "build_gemini_auth_request",
+    "GEMINI_AUTH_BASE_URL",
 ]

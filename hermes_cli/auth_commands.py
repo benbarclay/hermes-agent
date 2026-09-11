@@ -80,8 +80,8 @@ def _normalize_provider(provider: str) -> str:
         return "openrouter"
     if normalized in {"grok-oauth", "xai-oauth", "x-ai-oauth", "xai-grok-oauth"}:
         return "xai-oauth"
-    if normalized in {"antigravity", "google-antigravity", "antigravity-oauth"}:
-        return "antigravity"
+    if normalized in {"gemini-auth", "google-gemini-auth", "gemini-auth-oauth"}:
+        return "gemini-auth"
     # Check if it matches a custom provider name
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:
@@ -168,7 +168,7 @@ def auth_add_command(args) -> None:
     if (
         provider not in PROVIDER_REGISTRY
         and provider != "openrouter"
-        and provider != "antigravity"
+        and provider != "gemini-auth"
         and not provider.startswith(CUSTOM_POOL_PREFIX)
     ):
         raise SystemExit(f"Unknown provider: {provider}")
@@ -179,8 +179,8 @@ def auth_add_command(args) -> None:
     if not requested_type:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
-        elif provider == "antigravity":
-            # Antigravity is OAuth-only (Google account login); the OAuth
+        elif provider == "gemini-auth":
+            # Gemini Auth is OAuth-only (Google account login); the OAuth
             # branch fetches the client config from NAS discovery.
             requested_type = AUTH_TYPE_OAUTH
         else:
@@ -442,25 +442,25 @@ def auth_add_command(args) -> None:
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
-    if provider == "antigravity":
-        # Antigravity is OAuth-only and not in PROVIDER_REGISTRY /
+    if provider == "gemini-auth":
+        # Gemini Auth is OAuth-only and not in PROVIDER_REGISTRY /
         # _OAUTH_CAPABLE_PROVIDERS, so it never appears in pickers or auth
         # lists; this branch is reachable only by an explicit
-        # `hermes auth add antigravity`. The client config (client_id, scope,
+        # `hermes auth add gemini-auth`. The client config (client_id, scope,
         # authorize_url) is fetched from NAS discovery at login.
         try:
-            from hermes_cli.antigravity_auth import _login_antigravity
+            from hermes_cli.gemini_auth import _login_gemini_auth
         except Exception as exc:  # pragma: no cover - import must not break auth
-            raise SystemExit(f"Antigravity auth module unavailable: {exc}")
-        _login_antigravity(args, auth_mod.PROVIDER_REGISTRY.get("antigravity"))
-        # _login_antigravity persists to the auth.json singleton and updates
+            raise SystemExit(f"Gemini Auth auth module unavailable: {exc}")
+        _login_gemini_auth(args, auth_mod.PROVIDER_REGISTRY.get("gemini-auth"))
+        # _login_gemini_auth persists to the auth.json singleton and updates
         # config; add a pool entry so `hermes auth list` / pool-based routing
         # see the credential too (mirrors the qwen-oauth flow).
         added_label = provider
         try:
-            from hermes_cli.antigravity_auth import resolve_antigravity_runtime_credentials
+            from hermes_cli.gemini_auth import resolve_gemini_auth_runtime_credentials
 
-            creds = resolve_antigravity_runtime_credentials(refresh_if_expiring=False)
+            creds = resolve_gemini_auth_runtime_credentials(refresh_if_expiring=False)
             added_label = (getattr(args, "label", None) or "").strip() or label_from_token(
                 creds["api_key"],
                 _oauth_default_label(provider, len(pool.entries()) + 1),
@@ -471,7 +471,7 @@ def auth_add_command(args) -> None:
                 label=added_label,
                 auth_type=AUTH_TYPE_OAUTH,
                 priority=0,
-                source=f"{SOURCE_MANUAL}:antigravity_oauth",
+                source=f"{SOURCE_MANUAL}:gemini_auth_oauth",
                 access_token=creds["api_key"],
                 refresh_token=str(creds.get("refresh_token") or ""),
                 base_url=creds.get("base_url"),

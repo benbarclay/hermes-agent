@@ -891,18 +891,18 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
     print(f"\u2713 Using MiniMax model: {selected}")
 
 
-def _model_flow_antigravity(config, current_model="", args=None):
-    """Antigravity (secret launch): ensure logged in, then pick model.
+def _model_flow_gemini_auth(config, current_model="", args=None):
+    """Gemini Auth (secret launch): ensure logged in, then pick model.
 
     Reachable only when the provider is explicitly configured
-    (``model.provider: antigravity`` in config.yaml) AND
-    ``ANTIGRAVITY_CLIENT_ID`` is set.  Not listed in any picker.
+    (``model.provider: gemini-auth`` in config.yaml) AND
+    ``GEMINI_AUTH_CLIENT_ID`` is set.  Not listed in any picker.
     """
-    from hermes_cli.antigravity_auth import (
-        antigravity_enabled,
-        get_antigravity_auth_status,
-        resolve_antigravity_runtime_credentials,
-        _login_antigravity,
+    from hermes_cli.gemini_auth import (
+        gemini_auth_enabled,
+        get_gemini_auth_status,
+        resolve_gemini_auth_runtime_credentials,
+        _login_gemini_auth,
     )
     from hermes_cli.auth import (
         _prompt_model_selection,
@@ -912,20 +912,20 @@ def _model_flow_antigravity(config, current_model="", args=None):
         format_auth_error,
     )
 
-    if not antigravity_enabled():
-        print("Antigravity is not configured (ANTIGRAVITY_CLIENT_ID unset).")
+    if not gemini_auth_enabled():
+        print("Gemini Auth is not configured (GEMINI_AUTH_CLIENT_ID unset).")
         return
 
-    status = get_antigravity_auth_status()
+    status = get_gemini_auth_status()
     if not status.get("logged_in"):
-        print("Not logged into Antigravity. Starting OAuth login...")
+        print("Not logged into Gemini Auth. Starting OAuth login...")
         print()
         try:
             mock_args = argparse.Namespace(
                 no_browser=bool(getattr(args, "no_browser", False)),
                 timeout=getattr(args, "timeout", None) or 30.0,
             )
-            _login_antigravity(mock_args, None)
+            _login_gemini_auth(mock_args, None)
         except SystemExit:
             print("Login cancelled or failed.")
             return
@@ -934,26 +934,26 @@ def _model_flow_antigravity(config, current_model="", args=None):
             return
 
     try:
-        creds = resolve_antigravity_runtime_credentials()
+        creds = resolve_gemini_auth_runtime_credentials()
     except AuthError as exc:
         print(format_auth_error(exc))
         return
 
     from hermes_cli.models import provider_model_ids
-    from hermes_cli.antigravity_auth import ANTIGRAVITY_INFERENCE_BASE_URL
+    from hermes_cli.gemini_auth import GEMINI_AUTH_INFERENCE_BASE_URL
 
-    model_ids = provider_model_ids("antigravity")
+    model_ids = provider_model_ids("gemini-auth")
     selected = _prompt_model_selection(
         model_ids,
         current_model,
-        confirm_provider="antigravity",
-        confirm_base_url=creds.get("base_url", ANTIGRAVITY_INFERENCE_BASE_URL),
+        confirm_provider="gemini-auth",
+        confirm_base_url=creds.get("base_url", GEMINI_AUTH_INFERENCE_BASE_URL),
     )
     if not selected:
         return
     _save_model_choice(selected)
-    _update_config_for_provider("antigravity", ANTIGRAVITY_INFERENCE_BASE_URL)
-    print(f"✓ Using Antigravity model: {selected}")
+    _update_config_for_provider("gemini-auth", GEMINI_AUTH_INFERENCE_BASE_URL)
+    print(f"✓ Using Gemini Auth model: {selected}")
 
 
 def _model_flow_custom(config):

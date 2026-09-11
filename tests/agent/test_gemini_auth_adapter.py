@@ -1,4 +1,4 @@
-"""Tests for the Antigravity (Gemini per-user-quota) transport.
+"""Tests for the Gemini Auth (Gemini per-user-quota) transport.
 
 Verifies the request goes to the ``:generateContentPerUserQuota`` /
 ``:streamGenerateContentPerUserQuota`` endpoints with a standard Gemini body
@@ -12,12 +12,12 @@ import json
 
 import pytest
 
-from agent.antigravity_adapter import (
-    ANTIGRAVITY_BASE_URL,
-    ANTIGRAVITY_GENERATE_PATH,
-    ANTIGRAVITY_STREAM_PATH,
-    AntigravityClient,
-    build_antigravity_request,
+from agent.gemini_auth_adapter import (
+    GEMINI_AUTH_BASE_URL,
+    GEMINI_AUTH_GENERATE_PATH,
+    GEMINI_AUTH_STREAM_PATH,
+    GeminiAuthClient,
+    build_gemini_auth_request,
 )
 
 
@@ -42,13 +42,13 @@ class _FakeGeminiPerUserQuota:
                 # The stream/serve paths carry a query string (?alt=sse); split
                 # it off before matching and record it as part of the contract.
                 path, _, query = self.path.partition("?")
-                if path.endswith(ANTIGRAVITY_GENERATE_PATH):
+                if path.endswith(GEMINI_AUTH_GENERATE_PATH):
                     outer.gen_req = obj
                     payload = {
                         "candidates": [
                             {
                                 "content": {
-                                    "parts": [{"text": "hello from antigravity"}]
+                                    "parts": [{"text": "hello from gemini-auth"}]
                                 },
                                 "finishReason": "STOP",
                             }
@@ -56,7 +56,7 @@ class _FakeGeminiPerUserQuota:
                     }
                     self._json(payload)
                     return
-                if path.endswith(ANTIGRAVITY_STREAM_PATH):
+                if path.endswith(GEMINI_AUTH_STREAM_PATH):
                     outer.stream_req = obj
                     outer.stream_query = query
                     # Two SSE events: a text chunk then a finishReason chunk.
@@ -128,8 +128,8 @@ def fake_api():
     srv.close()
 
 
-def test_build_antigravity_request_is_gemini_body():
-    body = build_antigravity_request(
+def test_build_gemini_auth_request_is_gemini_body():
+    body = build_gemini_auth_request(
         model="gemini-2.5-flash",
         messages=[{"role": "user", "content": "hi"}],
         tools=[{"type": "function", "function": {"name": "f", "parameters": {}}}],
@@ -142,11 +142,11 @@ def test_build_antigravity_request_is_gemini_body():
 
 
 def test_client_sends_to_per_user_quota_endpoint_with_bearer(fake_api):
-    client = AntigravityClient(api_key="test-oauth-token", base_url=fake_api.base_url)
+    client = GeminiAuthClient(api_key="test-oauth-token", base_url=fake_api.base_url)
     resp = client.chat.completions.create(
         model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}]
     )
-    assert resp.choices[0].message.content == "hello from antigravity"
+    assert resp.choices[0].message.content == "hello from gemini-auth"
     # Standard Gemini body on the per-user-quota endpoint, Bearer auth.
     assert fake_api.gen_req["contents"][0]["parts"][0]["text"] == "hi"
     assert fake_api.auth_header == "Bearer test-oauth-token"
@@ -154,12 +154,12 @@ def test_client_sends_to_per_user_quota_endpoint_with_bearer(fake_api):
 
 def test_client_requires_token():
     with pytest.raises(RuntimeError, match="access token"):
-        AntigravityClient(api_key="")
+        GeminiAuthClient(api_key="")
 
 
 def test_client_streams_sse(fake_api):
     """The streaming path parses SSE events into text + finish chunks."""
-    client = AntigravityClient(api_key="test-oauth-token", base_url=fake_api.base_url)
+    client = GeminiAuthClient(api_key="test-oauth-token", base_url=fake_api.base_url)
     stream = client.chat.completions.stream(
         model="gemini-2.5-flash", messages=[{"role": "user", "content": "hi"}]
     )
@@ -187,19 +187,19 @@ def test_client_streams_sse(fake_api):
 
 
 def test_inference_base_url_single_source_of_truth():
-    """The inference host is defined once (in antigravity_auth) and shared.
+    """The inference host is defined once (in gemini_auth) and shared.
 
     The provider profile, the transport, and the runtime resolution all import
     the same constant — a launch-time host correction is one edit.  Assert the
     three consumers agree rather than pinning the literal (which only passes
     if the constant and the test were edited together).
     """
-    from agent.antigravity_adapter import ANTIGRAVITY_BASE_URL
-    from hermes_cli.antigravity_auth import ANTIGRAVITY_INFERENCE_BASE_URL
+    from agent.gemini_auth_adapter import GEMINI_AUTH_BASE_URL
+    from hermes_cli.gemini_auth import GEMINI_AUTH_INFERENCE_BASE_URL
     from providers import get_provider_profile
 
-    prof = get_provider_profile("antigravity")
+    prof = get_provider_profile("gemini-auth")
     assert prof is not None
-    assert ANTIGRAVITY_BASE_URL == ANTIGRAVITY_INFERENCE_BASE_URL == prof.base_url
-    assert ANTIGRAVITY_BASE_URL.startswith("https://")
-    assert "generativelanguage.googleapis.com" in ANTIGRAVITY_BASE_URL
+    assert GEMINI_AUTH_BASE_URL == GEMINI_AUTH_INFERENCE_BASE_URL == prof.base_url
+    assert GEMINI_AUTH_BASE_URL.startswith("https://")
+    assert "generativelanguage.googleapis.com" in GEMINI_AUTH_BASE_URL

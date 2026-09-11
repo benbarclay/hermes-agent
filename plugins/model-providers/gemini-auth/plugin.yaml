@@ -1,0 +1,5 @@
+name: gemini-auth-provider
+kind: model-provider
+version: 0.1.0
+description: Gemini Auth (Cloud Code Assist OAuth)
+author: Nous Research

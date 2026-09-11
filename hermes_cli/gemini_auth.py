@@ -1,6 +1,6 @@
-"""Google Antigravity OAuth flow — PKCE loopback login, NAS-brokered exchange.
+"""Gemini Auth OAuth flow — PKCE loopback login, NAS-brokered exchange.
 
-Antigravity authenticates with the user's Google account (their Antigravity
+Gemini Auth authenticates with the user's Google account (their Gemini Auth
 subscription).  The flow:
 
 1. Hermes generates a PKCE pair + state nonce and opens the Google authorize
@@ -9,7 +9,7 @@ subscription).  The flow:
 3. Hermes POSTs ``{code, code_verifier, redirect_uri}`` to a **NAS broker
    endpoint** which holds the Google ``client_secret`` (never shipped to
    Hermes) and performs the token exchange.
-4. Tokens are stored in ``auth.json`` ``providers.antigravity`` (same custody
+4. Tokens are stored in ``auth.json`` ``providers.gemini-auth`` (same custody
    model as xai-oauth / qwen-oauth), and refreshed through the NAS broker
    whenever the access token nears expiry.
 
@@ -17,8 +17,8 @@ Inference traffic goes DIRECT from Hermes to ``cloudcode-pa.googleapis.com``
 with the access token — NAS is out of the prompt path entirely.
 
 Secret-launch mechanics: the whole module is inert unless
-``ANTIGRAVITY_CLIENT_ID`` is present (see ``antigravity_enabled``).  Nothing
-in the CLI advertises the provider; ``hermes auth add antigravity`` accepts
+``GEMINI_AUTH_CLIENT_ID`` is present (see ``gemini_auth_enabled``).  Nothing
+in the CLI advertises the provider; ``hermes auth add gemini-auth`` accepts
 the name only when enabled, and it never appears in pickers or auth lists.
 """
 
@@ -44,32 +44,32 @@ logger = logging.getLogger(__name__)
 # Base URL of the NAS broker that holds the client_secret and performs the
 # code exchange / refresh, and owns the Google client config (discovered at
 # login).  Defaults to the public portal origin.
-ANTIGRAVITY_NAS_BASE_URL_ENV = "ANTIGRAVITY_NAS_BASE_URL"
-DEFAULT_ANTIGRAVITY_NAS_BASE_URL = "https://portal.nousresearch.com"
+GEMINI_AUTH_NAS_BASE_URL_ENV = "GEMINI_AUTH_NAS_BASE_URL"
+DEFAULT_GEMINI_AUTH_NAS_BASE_URL = "https://portal.nousresearch.com"
 
-ANTIGRAVITY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 300  # refresh 5 min before expiry
+GEMINI_AUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 300  # refresh 5 min before expiry
 
 # NAS broker endpoints.
-ANTIGRAVITY_NAS_EXCHANGE_PATH = "/api/oauth/antigravity/exchange"
-ANTIGRAVITY_NAS_REFRESH_PATH = "/api/oauth/antigravity/refresh"
-ANTIGRAVITY_NAS_CONFIG_PATH = "/api/oauth/antigravity/config"
+GEMINI_AUTH_NAS_EXCHANGE_PATH = "/api/oauth/gemini-auth/exchange"
+GEMINI_AUTH_NAS_REFRESH_PATH = "/api/oauth/gemini-auth/refresh"
+GEMINI_AUTH_NAS_CONFIG_PATH = "/api/oauth/gemini-auth/config"
 
 # Inference base URL — Gemini per-user-quota host.  SINGLE SOURCE OF TRUTH for
-# the inference host: the provider profile (plugins/model-providers/antigravity)
-# and the transport (agent/antigravity_adapter.py) import this constant, so a
+# the inference host: the provider profile (plugins/model-providers/gemini-auth)
+# and the transport (agent/gemini_auth_adapter.py) import this constant, so a
 # launch-time host correction is a one-line change in exactly one place.
-ANTIGRAVITY_INFERENCE_BASE_URL = "https://generativelanguage.googleapis.com/v1alpha"
+GEMINI_AUTH_INFERENCE_BASE_URL = "https://generativelanguage.googleapis.com/v1alpha"
 
 
 class _AuthError(Exception):
     """Local stand-in for ``hermes_cli.auth.AuthError``.
 
     Deliberately NOT imported from ``hermes_cli.auth`` at module top: this
-    module must stay light-importable (std + httpx) because the antigravity
+    module must stay light-importable (std + httpx) because the gemini-auth
     provider plugin imports it during provider discovery, and pulling in
     ``hermes_cli.auth`` there would drag the whole auth subsystem into every
     ``list_providers()`` call.  The exception is converted to the real
-    ``AuthError`` at the module boundary (``resolve_antigravity_runtime_credentials``),
+    ``AuthError`` at the module boundary (``resolve_gemini_auth_runtime_credentials``),
     so callers outside this module always see the canonical type.
     """
 
@@ -77,8 +77,8 @@ class _AuthError(Exception):
         self,
         message: str,
         *,
-        provider: str = "antigravity",
-        code: str = "antigravity_error",
+        provider: str = "gemini-auth",
+        code: str = "gemini_auth_error",
         relogin_required: bool = False,
     ) -> None:
         super().__init__(message)
@@ -87,24 +87,24 @@ class _AuthError(Exception):
         self.relogin_required = relogin_required
 
 
-def antigravity_enabled() -> bool:
-    """True when the Antigravity provider is surfaced/usable.
+def gemini_auth_enabled() -> bool:
+    """True when the Gemini Auth provider is surfaced/usable.
 
     With NAS owning the Google client config (discovered at login), there is
     no local enable-gate env var — the provider is enabled by default and
     usable whenever a logged-in Nous user has a reachable NAS broker. The
     provider stays `hidden=True` (out of the default picker) until configured,
     matching the dark-launch intent; once a user runs `hermes auth add
-    antigravity` it becomes the active provider.
+    gemini-auth` it becomes the active provider.
     """
     return True
 
 
-def antigravity_nas_base_url() -> str:
+def gemini_auth_nas_base_url() -> str:
     """Return the NAS broker base URL (env override or portal default)."""
     return (
-        os.getenv(ANTIGRAVITY_NAS_BASE_URL_ENV, "") or ""
-    ).strip() or DEFAULT_ANTIGRAVITY_NAS_BASE_URL
+        os.getenv(GEMINI_AUTH_NAS_BASE_URL_ENV, "") or ""
+    ).strip() or DEFAULT_GEMINI_AUTH_NAS_BASE_URL
 
 
 def _validate_broker_url(url: str) -> str:
@@ -112,33 +112,33 @@ def _validate_broker_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme != "https":
         raise _AuthError(
-            f"Antigravity NAS broker URL must be HTTPS: {url!r}",
-            code="antigravity_broker_invalid",
+            f"Gemini Auth NAS broker URL must be HTTPS: {url!r}",
+            code="gemini_auth_broker_invalid",
         )
     if not parsed.hostname:
         raise _AuthError(
-            f"Antigravity NAS broker URL is missing a hostname: {url!r}",
-            code="antigravity_broker_invalid",
+            f"Gemini Auth NAS broker URL is missing a hostname: {url!r}",
+            code="gemini_auth_broker_invalid",
         )
     return url.rstrip("/")
 
 
 # ---------------------------------------------------------------------------
-# Token store (auth.json providers.antigravity)
+# Token store (auth.json providers.gemini-auth)
 # ---------------------------------------------------------------------------
 
 
-def _antigravity_state_from_store(
+def _gemini_auth_state_from_store(
     auth_store: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
     from hermes_cli.auth import _load_provider_state
 
-    state = _load_provider_state(auth_store, "antigravity")
+    state = _load_provider_state(auth_store, "gemini-auth")
     if isinstance(state, dict):
         return state
     credential_pool = auth_store.get("credential_pool")
     entries = (
-        credential_pool.get("antigravity")
+        credential_pool.get("gemini-auth")
         if isinstance(credential_pool, dict)
         else None
     )
@@ -163,7 +163,7 @@ def _antigravity_state_from_store(
     return state if isinstance(state, dict) else None
 
 
-def _antigravity_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
+def _gemini_auth_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> bool:
     tokens = state.get("tokens") if isinstance(state, dict) else None
     return (
         isinstance(tokens, dict)
@@ -172,7 +172,7 @@ def _antigravity_state_has_usable_tokens(state: Optional[Dict[str, Any]]) -> boo
     )
 
 
-def _read_antigravity_tokens(*, _lock: bool = True) -> Dict[str, Any]:
+def _read_gemini_auth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     from hermes_cli.auth import (
         _auth_store_lock,
         _load_auth_store,
@@ -184,22 +184,22 @@ def _read_antigravity_tokens(*, _lock: bool = True) -> Dict[str, Any]:
             auth_store = _load_auth_store()
     else:
         auth_store = _load_auth_store()
-    state = _antigravity_state_from_store(auth_store)
-    if not _antigravity_state_has_usable_tokens(state):
-        global_state = _antigravity_state_from_store(_load_global_auth_store())
-        if _antigravity_state_has_usable_tokens(global_state):
+    state = _gemini_auth_state_from_store(auth_store)
+    if not _gemini_auth_state_has_usable_tokens(state):
+        global_state = _gemini_auth_state_from_store(_load_global_auth_store())
+        if _gemini_auth_state_has_usable_tokens(global_state):
             state = global_state
     if not state:
         raise _AuthError(
-            "No Antigravity credentials stored. Sign in with `hermes auth add antigravity`.",
-            code="antigravity_auth_missing",
+            "No Gemini Auth credentials stored. Sign in with `hermes auth add gemini-auth`.",
+            code="gemini_auth_missing",
             relogin_required=True,
         )
     tokens = state.get("tokens")
     if not isinstance(tokens, dict):
         raise _AuthError(
-            "Antigravity auth state is missing tokens. Re-authenticate.",
-            code="antigravity_auth_invalid_shape",
+            "Gemini Auth auth state is missing tokens. Re-authenticate.",
+            code="gemini_auth_invalid_shape",
             relogin_required=True,
         )
     return {
@@ -210,14 +210,14 @@ def _read_antigravity_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
-def _save_antigravity_tokens(
+def _save_gemini_auth_tokens(
     tokens: Dict[str, Any],
     *,
     redirect_uri: str = "",
     last_refresh: Optional[str] = None,
     set_active: bool = True,
 ) -> None:
-    """Persist Antigravity tokens into auth.json (with global-root write-through)."""
+    """Persist Gemini Auth tokens into auth.json (with global-root write-through)."""
     from hermes_cli.auth import (
         _auth_store_lock,
         _global_auth_file_path,
@@ -233,7 +233,7 @@ def _save_antigravity_tokens(
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        state, source_path = _load_provider_state_with_source(auth_store, "antigravity")
+        state, source_path = _load_provider_state_with_source(auth_store, "gemini-auth")
         if state is None:
             state = {}
         state["tokens"] = tokens
@@ -249,16 +249,16 @@ def _save_antigravity_tokens(
         )
         if is_from_root and global_root is not None:
             _persist_provider_state_to_store(
-                "antigravity", state, global_root, set_active=False
+                "gemini-auth", state, global_root, set_active=False
             )
         else:
             _store_provider_state(
-                auth_store, "antigravity", state, set_active=set_active
+                auth_store, "gemini-auth", state, set_active=set_active
             )
             _save_auth_store(auth_store)
 
 
-def _antigravity_access_token_is_expiring(
+def _gemini_auth_access_token_is_expiring(
     access_token: str, skew_seconds: int = 0
 ) -> bool:
     """True when a JWT access token's ``exp`` is within *skew_seconds*."""
@@ -292,7 +292,7 @@ def _antigravity_access_token_is_expiring(
 def _nous_bearer_header() -> Dict[str, str]:
     """Resolve the caller's Nous access token and build a Bearer auth header.
 
-    NAS gates the Antigravity broker behind a valid Nous token from a logged-in
+    NAS gates the Gemini Auth broker behind a valid Nous token from a logged-in
     user (no specific scope). Lazily imported so this module stays
     light-importable during provider discovery.
     """
@@ -306,8 +306,8 @@ def _exchange_code(
     code: str, code_verifier: str, redirect_uri: str, *, timeout: float = 30.0
 ) -> Dict[str, Any]:
     """POST the authorize code to the NAS broker for exchange with Google."""
-    broker = _validate_broker_url(antigravity_nas_base_url())
-    url = f"{broker}{ANTIGRAVITY_NAS_EXCHANGE_PATH}"
+    broker = _validate_broker_url(gemini_auth_nas_base_url())
+    url = f"{broker}{GEMINI_AUTH_NAS_EXCHANGE_PATH}"
     headers = {"Accept": "application/json", **_nous_bearer_header()}
     with httpx.Client(timeout=httpx.Timeout(timeout)) as client:
         response = client.post(
@@ -321,24 +321,24 @@ def _exchange_code(
         )
     if response.status_code != 200:
         raise _AuthError(
-            f"Antigravity OAuth exchange failed (HTTP {response.status_code})."
+            f"Gemini Auth OAuth exchange failed (HTTP {response.status_code})."
             + (f" {response.text.strip()}" if response.text else ""),
-            code="antigravity_exchange_failed",
+            code="gemini_auth_exchange_failed",
         )
     payload = response.json()
     for key in ("access_token", "refresh_token"):
         if not str(payload.get(key, "") or "").strip():
             raise _AuthError(
-                f"Antigravity OAuth exchange response missing {key}.",
-                code="antigravity_exchange_invalid",
+                f"Gemini Auth OAuth exchange response missing {key}.",
+                code="gemini_auth_exchange_invalid",
             )
     return payload
 
 
 def _refresh_tokens(refresh_token: str, *, timeout: float = 30.0) -> Dict[str, Any]:
     """POST the refresh token to the NAS broker for rotation."""
-    broker = _validate_broker_url(antigravity_nas_base_url())
-    url = f"{broker}{ANTIGRAVITY_NAS_REFRESH_PATH}"
+    broker = _validate_broker_url(gemini_auth_nas_base_url())
+    url = f"{broker}{GEMINI_AUTH_NAS_REFRESH_PATH}"
     headers = {"Accept": "application/json", **_nous_bearer_header()}
     with httpx.Client(timeout=httpx.Timeout(timeout)) as client:
         response = client.post(
@@ -350,44 +350,44 @@ def _refresh_tokens(refresh_token: str, *, timeout: float = 30.0) -> Dict[str, A
         body = response.text or response.reason_phrase
         relogin = "invalid_grant" in body.lower() or "refresh_token" in body.lower()
         raise _AuthError(
-            f"Antigravity token refresh failed: {body}",
-            code="antigravity_refresh_failed",
+            f"Gemini Auth token refresh failed: {body}",
+            code="gemini_auth_refresh_failed",
             relogin_required=relogin,
         )
     payload = response.json()
     if not str(payload.get("access_token", "") or "").strip():
         raise _AuthError(
-            "Antigravity refresh response missing access_token.",
-            code="antigravity_refresh_invalid",
+            "Gemini Auth refresh response missing access_token.",
+            code="gemini_auth_refresh_invalid",
             relogin_required=True,
         )
     return payload
 
 
-def _fetch_antigravity_config(*, timeout: float = 30.0) -> Dict[str, Any]:
+def _fetch_gemini_auth_config(*, timeout: float = 30.0) -> Dict[str, Any]:
     """GET the Google-client config from NAS (client_id, scope, authorize_url).
 
     NAS is the single source of truth for the Google client; the local agent
     builds its authorize URL from this (adding only its own PKCE challenge,
     state, and loopback redirect_uri).
     """
-    broker = _validate_broker_url(antigravity_nas_base_url())
-    url = f"{broker}{ANTIGRAVITY_NAS_CONFIG_PATH}"
+    broker = _validate_broker_url(gemini_auth_nas_base_url())
+    url = f"{broker}{GEMINI_AUTH_NAS_CONFIG_PATH}"
     headers = {"Accept": "application/json", **_nous_bearer_header()}
     with httpx.Client(timeout=httpx.Timeout(timeout)) as client:
         response = client.get(url, headers=headers)
     if response.status_code != 200:
         raise _AuthError(
-            f"Antigravity config fetch failed (HTTP {response.status_code})."
+            f"Gemini Auth config fetch failed (HTTP {response.status_code})."
             + (f" {response.text.strip()}" if response.text else ""),
-            code="antigravity_config_failed",
+            code="gemini_auth_config_failed",
         )
     payload = response.json()
     for key in ("client_id", "authorize_url", "scope"):
         if not str(payload.get(key, "") or "").strip():
             raise _AuthError(
-                f"Antigravity config response missing {key}.",
-                code="antigravity_config_invalid",
+                f"Gemini Auth config response missing {key}.",
+                code="gemini_auth_config_invalid",
             )
     return payload
 
@@ -397,7 +397,7 @@ def _fetch_antigravity_config(*, timeout: float = 30.0) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _antigravity_pkce_pair() -> tuple[str, str, str]:
+def _gemini_auth_pkce_pair() -> tuple[str, str, str]:
     """Return (code_verifier, code_challenge, state)."""
     from hermes_cli.auth import _oauth_pkce_code_challenge, _oauth_pkce_code_verifier
 
@@ -407,7 +407,7 @@ def _antigravity_pkce_pair() -> tuple[str, str, str]:
     return verifier, challenge, state
 
 
-def _make_antigravity_callback_handler(
+def _make_gemini_auth_callback_handler(
     expected_path: str,
 ) -> tuple[type[BaseHTTPRequestHandler], Dict[str, Any]]:
     result: Dict[str, Any] = {
@@ -417,7 +417,7 @@ def _make_antigravity_callback_handler(
         "error_description": None,
     }
 
-    class _AntigravityCallbackHandler(BaseHTTPRequestHandler):
+    class _GeminiAuthCallbackHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             if parsed.path != expected_path:
@@ -434,15 +434,15 @@ def _make_antigravity_callback_handler(
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             if result["error"]:
-                body = "<html><body><h1>Antigravity authorization failed.</h1>You can close this tab.</body></html>"
+                body = "<html><body><h1>Gemini Auth authorization failed.</h1>You can close this tab.</body></html>"
             else:
-                body = "<html><body><h1>Antigravity authorization received.</h1>You can close this tab.</body></html>"
+                body = "<html><body><h1>Gemini Auth authorization received.</h1>You can close this tab.</body></html>"
             self.wfile.write(body.encode("utf-8"))
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
             return
 
-    return _AntigravityCallbackHandler, result
+    return _GeminiAuthCallbackHandler, result
 
 
 def _wait_for_loopback_callback(
@@ -451,7 +451,7 @@ def _wait_for_loopback_callback(
     """Run the loopback listener until the code arrives (or timeout/error)."""
     import threading
 
-    handler_cls, result = _make_antigravity_callback_handler(path)
+    handler_cls, result = _make_gemini_auth_callback_handler(path)
 
     class _ReuseHTTPServer(HTTPServer):
         allow_reuse_address = True
@@ -460,8 +460,8 @@ def _wait_for_loopback_callback(
         server = _ReuseHTTPServer(("127.0.0.1", port), handler_cls)
     except OSError as exc:
         raise _AuthError(
-            f"Could not bind Antigravity callback server on 127.0.0.1:{port}: {exc}",
-            code="antigravity_callback_bind_failed",
+            f"Could not bind Gemini Auth callback server on 127.0.0.1:{port}: {exc}",
+            code="gemini_auth_callback_bind_failed",
         ) from exc
 
     thread = threading.Thread(
@@ -479,8 +479,8 @@ def _wait_for_loopback_callback(
         server.server_close()
         thread.join(timeout=1.0)
     raise _AuthError(
-        "Antigravity authorization timed out waiting for the local callback.",
-        code="antigravity_callback_timeout",
+        "Gemini Auth authorization timed out waiting for the local callback.",
+        code="gemini_auth_callback_timeout",
     )
 
 
@@ -493,30 +493,30 @@ def _pick_loopback_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _login_antigravity(
+def _login_gemini_auth(
     args: Any,
     pconfig: Any,
     *,
     force_new_login: bool = False,
 ) -> None:
-    """Run the Antigravity PKCE loopback login and persist tokens."""
+    """Run the Gemini Auth PKCE loopback login and persist tokens."""
     del pconfig  # parity with other provider login helpers
 
-    if not antigravity_enabled():
+    if not gemini_auth_enabled():
         raise _AuthError(
-            "Antigravity is not configured. Set ANTIGRAVITY_CLIENT_ID in "
+            "Gemini Auth is not configured. Set GEMINI_AUTH_CLIENT_ID in "
             "~/.hermes/.env and try again.",
-            code="antigravity_not_configured",
+            code="gemini_auth_not_configured",
         )
 
     if not force_new_login:
         try:
-            existing = resolve_antigravity_runtime_credentials(
+            existing = resolve_gemini_auth_runtime_credentials(
                 refresh_if_expiring=False
             )
             api_key = existing.get("api_key", "")
-            if api_key and not _antigravity_access_token_is_expiring(api_key, 60):
-                print("Existing Antigravity credentials found in Hermes auth store.")
+            if api_key and not _gemini_auth_access_token_is_expiring(api_key, 60):
+                print("Existing Gemini Auth credentials found in Hermes auth store.")
                 try:
                     reuse = input("Use existing credentials? [Y/n]: ").strip().lower()
                 except (EOFError, KeyboardInterrupt):
@@ -525,8 +525,8 @@ def _login_antigravity(
                     from hermes_cli.auth import _update_config_for_provider
 
                     _update_config_for_provider(
-                        "antigravity",
-                        existing.get("base_url", ANTIGRAVITY_INFERENCE_BASE_URL),
+                        "gemini-auth",
+                        existing.get("base_url", GEMINI_AUTH_INFERENCE_BASE_URL),
                     )
                     print()
                     print("Login successful!")
@@ -534,13 +534,13 @@ def _login_antigravity(
         except Exception:
             pass  # no existing creds → fall through to a fresh login
 
-    cfg = _fetch_antigravity_config()
-    verifier, challenge, state = _antigravity_pkce_pair()
+    cfg = _fetch_gemini_auth_config()
+    verifier, challenge, state = _gemini_auth_pkce_pair()
     port = _pick_loopback_port()
-    redirect_uri = f"http://127.0.0.1:{port}/antigravity/callback"
+    redirect_uri = f"http://127.0.0.1:{port}/gemini-auth/callback"
 
     print()
-    print("Signing in to Google Antigravity...")
+    print("Signing in to Gemini Auth...")
     print("(Hermes creates its own local OAuth session — tokens stay on this machine)")
     print()
 
@@ -581,22 +581,22 @@ def _login_antigravity(
         print("  (Open the URL above and authorize.)")
     print("Waiting for authorization...")
 
-    callback = _wait_for_loopback_callback(port, "/antigravity/callback")
+    callback = _wait_for_loopback_callback(port, "/gemini-auth/callback")
     if callback.get("error"):
         raise _AuthError(
-            f"Antigravity authorization failed: {callback.get('error_description') or callback.get('error')}",
-            code="antigravity_auth_denied",
+            f"Gemini Auth authorization failed: {callback.get('error_description') or callback.get('error')}",
+            code="gemini_auth_denied",
         )
     if callback.get("state") != state:
         raise _AuthError(
-            "Antigravity callback state mismatch — the response may have been tampered with.",
-            code="antigravity_state_mismatch",
+            "Gemini Auth callback state mismatch — the response may have been tampered with.",
+            code="gemini_auth_state_mismatch",
         )
     code = callback.get("code")
     if not code:
         raise _AuthError(
-            "Antigravity callback did not include an authorization code.",
-            code="antigravity_callback_no_code",
+            "Gemini Auth callback did not include an authorization code.",
+            code="gemini_auth_callback_no_code",
         )
 
     token_payload = _exchange_code(code, verifier, redirect_uri)
@@ -615,17 +615,17 @@ def _login_antigravity(
         ).isoformat(),
         "expires_in": expires_in,
     }
-    _save_antigravity_tokens(tokens, redirect_uri=redirect_uri, set_active=True)
+    _save_gemini_auth_tokens(tokens, redirect_uri=redirect_uri, set_active=True)
 
     from hermes_cli.auth import (
         _update_config_for_provider,
         unsuppress_credential_source,
     )
 
-    unsuppress_credential_source("antigravity", "oauth_pkce")
-    _update_config_for_provider("antigravity", ANTIGRAVITY_INFERENCE_BASE_URL)
+    unsuppress_credential_source("gemini-auth", "oauth_pkce")
+    _update_config_for_provider("gemini-auth", GEMINI_AUTH_INFERENCE_BASE_URL)
     print()
-    print("✓ Antigravity login successful.")
+    print("✓ Gemini Auth login successful.")
     print(f"  Tokens: {_auth_file_hint()}")
 
 
@@ -650,12 +650,12 @@ def _auth_file_hint() -> str:
 # ---------------------------------------------------------------------------
 
 
-def resolve_antigravity_runtime_credentials(
+def resolve_gemini_auth_runtime_credentials(
     *,
     refresh_if_expiring: bool = True,
     force_refresh: bool = False,
 ) -> Dict[str, Any]:
-    """Resolve usable Antigravity credentials, refreshing via NAS when needed.
+    """Resolve usable Gemini Auth credentials, refreshing via NAS when needed.
 
     Mirrors resolve_xai_oauth_runtime_credentials: read store → refresh if
     expiring → return dict with api_key/base_url.  The ``api_key`` is the
@@ -664,12 +664,12 @@ def resolve_antigravity_runtime_credentials(
     from hermes_cli.auth import AuthError
 
     try:
-        stored = _read_antigravity_tokens()
+        stored = _read_gemini_auth_tokens()
     except _AuthError as exc:
         raise AuthError(
             str(exc),
-            provider="antigravity",
-            code=getattr(exc, "code", "antigravity_auth_missing"),
+            provider="gemini-auth",
+            code=getattr(exc, "code", "gemini_auth_missing"),
             relogin_required=getattr(exc, "relogin_required", True),
         ) from exc
 
@@ -679,16 +679,16 @@ def resolve_antigravity_runtime_credentials(
 
     should_refresh = force_refresh or (
         refresh_if_expiring
-        and _antigravity_access_token_is_expiring(
-            access_token, ANTIGRAVITY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS
+        and _gemini_auth_access_token_is_expiring(
+            access_token, GEMINI_AUTH_ACCESS_TOKEN_REFRESH_SKEW_SECONDS
         )
     )
     if should_refresh:
         if not refresh_token:
             raise AuthError(
-                "Antigravity access token is expired and no refresh token is stored. Re-login.",
-                provider="antigravity",
-                code="antigravity_no_refresh_token",
+                "Gemini Auth access token is expired and no refresh token is stored. Re-login.",
+                provider="gemini-auth",
+                code="gemini_auth_no_refresh_token",
                 relogin_required=True,
             )
         try:
@@ -704,7 +704,7 @@ def resolve_antigravity_runtime_credentials(
                 now.timestamp() + expires_in, tz=timezone.utc
             ).isoformat()
             new_tokens["expires_in"] = expires_in
-            _save_antigravity_tokens(new_tokens, set_active=False)
+            _save_gemini_auth_tokens(new_tokens, set_active=False)
             tokens = new_tokens
         except _AuthError as exc:
             # Terminal refresh failure (invalid_grant / revoked) — clear the
@@ -721,39 +721,39 @@ def resolve_antigravity_runtime_credentials(
 
                 with _auth_store_lock():
                     _q_store = _load_auth_store()
-                    _q_state = _load_provider_state(_q_store, "antigravity") or {}
+                    _q_state = _load_provider_state(_q_store, "gemini-auth") or {}
                     _q_tokens = dict(_q_state.get("tokens") or {})
                     _q_tokens.pop("access_token", None)
                     _q_tokens.pop("refresh_token", None)
                     _q_state["tokens"] = _q_tokens
                     _q_state["last_auth_error"] = {
-                        "provider": "antigravity",
-                        "code": getattr(exc, "code", "antigravity_refresh_failed"),
+                        "provider": "gemini-auth",
+                        "code": getattr(exc, "code", "gemini_auth_refresh_failed"),
                         "message": str(exc),
                         "reason": "runtime_refresh_failure",
                         "relogin_required": True,
                         "at": datetime.now(timezone.utc).isoformat(),
                     }
                     _store_provider_state(
-                        _q_store, "antigravity", _q_state, set_active=False
+                        _q_store, "gemini-auth", _q_state, set_active=False
                     )
                     _save_auth_store(_q_store)
             except Exception as _save_exc:  # pragma: no cover - best effort
                 logger.debug(
-                    "Antigravity OAuth: failed to persist quarantined state: %s",
+                    "Gemini Auth OAuth: failed to persist quarantined state: %s",
                     _save_exc,
                 )
             raise AuthError(
                 str(exc),
-                provider="antigravity",
-                code=getattr(exc, "code", "antigravity_refresh_failed"),
+                provider="gemini-auth",
+                code=getattr(exc, "code", "gemini_auth_refresh_failed"),
                 relogin_required=getattr(exc, "relogin_required", True),
             ) from exc
 
     return {
-        "provider": "antigravity",
+        "provider": "gemini-auth",
         "api_mode": "chat_completions",
-        "base_url": ANTIGRAVITY_INFERENCE_BASE_URL,
+        "base_url": GEMINI_AUTH_INFERENCE_BASE_URL,
         "api_key": str(tokens.get("access_token", "") or "").strip(),
         "source": "hermes-auth-store",
         "last_refresh": stored.get("last_refresh"),
@@ -769,14 +769,14 @@ def _token_expiry_ms(expires_at: Any) -> Optional[int]:
         return None
 
 
-def get_antigravity_auth_status() -> Dict[str, Any]:
+def get_gemini_auth_status() -> Dict[str, Any]:
     """Return auth status dict (logged_in, account hints, error)."""
     try:
-        creds = resolve_antigravity_runtime_credentials(refresh_if_expiring=False)
+        creds = resolve_gemini_auth_runtime_credentials(refresh_if_expiring=False)
         access = creds.get("api_key", "")
-        expired = _antigravity_access_token_is_expiring(access, 0)
+        expired = _gemini_auth_access_token_is_expiring(access, 0)
         return {
-            "provider": "antigravity",
+            "provider": "gemini-auth",
             "logged_in": bool(access),
             "configured": True,
             "access_token_expired": expired,
@@ -784,7 +784,7 @@ def get_antigravity_auth_status() -> Dict[str, Any]:
         }
     except Exception as exc:
         return {
-            "provider": "antigravity",
+            "provider": "gemini-auth",
             "logged_in": False,
             "configured": True,
             "error": str(exc),

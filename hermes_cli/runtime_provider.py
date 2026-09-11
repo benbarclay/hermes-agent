@@ -1826,23 +1826,23 @@ def resolve_runtime_provider(
                 runtime["requested_provider"] = requested_provider
                 return runtime
 
-    # Antigravity is a hidden (pre-release) OAuth provider deliberately kept
+    # Gemini Auth is a hidden (pre-release) OAuth provider deliberately kept
     # out of PROVIDER_REGISTRY so it never appears in pickers or auth lists.
     # resolve_provider() validates the name against that registry and would
     # raise "Unknown provider" before any provider-specific branch could run,
     # so handle it here — ahead of that call.
     if str(requested_provider or "").strip().lower() in {
-        "antigravity",
-        "google-antigravity",
-        "antigravity-oauth",
+        "gemini-auth",
+        "google-gemini-auth",
+        "gemini-auth-oauth",
     }:
-        from hermes_cli.antigravity_auth import (
-            resolve_antigravity_runtime_credentials,
+        from hermes_cli.gemini_auth import (
+            resolve_gemini_auth_runtime_credentials,
         )
 
-        creds = resolve_antigravity_runtime_credentials()
+        creds = resolve_gemini_auth_runtime_credentials()
         return {
-            "provider": "antigravity",
+            "provider": "gemini-auth",
             "api_mode": "chat_completions",
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),

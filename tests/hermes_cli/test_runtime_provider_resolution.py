@@ -105,17 +105,17 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
     assert resolved["provider"] != "qwen-oauth"
 
 
-def test_resolve_runtime_provider_antigravity(monkeypatch):
-    """runtime_provider returns the antigravity dict from the auth module."""
-    from hermes_cli import antigravity_auth as aa
+def test_resolve_runtime_provider_gemini_auth(monkeypatch):
+    """runtime_provider returns the gemini-auth dict from the auth module."""
+    from hermes_cli import gemini_auth as aa
 
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "antigravity")
-    monkeypatch.setattr(aa, "antigravity_enabled", lambda: True)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "gemini-auth")
+    monkeypatch.setattr(aa, "gemini_auth_enabled", lambda: True)
     monkeypatch.setattr(
         aa,
-        "resolve_antigravity_runtime_credentials",
+        "resolve_gemini_auth_runtime_credentials",
         lambda **kw: {
-            "provider": "antigravity",
+            "provider": "gemini-auth",
             "api_mode": "chat_completions",
             "base_url": "https://cloudcode-pa.googleapis.com",
             "api_key": "oauth-at-1",
@@ -123,25 +123,25 @@ def test_resolve_runtime_provider_antigravity(monkeypatch):
         },
     )
 
-    resolved = rp.resolve_runtime_provider(requested="antigravity")
+    resolved = rp.resolve_runtime_provider(requested="gemini-auth")
 
-    assert resolved["provider"] == "antigravity"
+    assert resolved["provider"] == "gemini-auth"
     assert resolved["api_mode"] == "chat_completions"
     assert resolved["api_key"] == "oauth-at-1"
     assert "cloudcode-pa.googleapis.com" in resolved["base_url"]
 
 
-def test_resolve_runtime_provider_antigravity_disabled(monkeypatch):
-    """When antigravity is not configured, auto-resolution falls through."""
-    from hermes_cli import antigravity_auth as aa
+def test_resolve_runtime_provider_gemini_auth_disabled(monkeypatch):
+    """When gemini-auth is not configured, auto-resolution falls through."""
+    from hermes_cli import gemini_auth as aa
 
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "antigravity")
-    monkeypatch.setattr(aa, "antigravity_enabled", lambda: False)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "gemini-auth")
+    monkeypatch.setattr(aa, "gemini_auth_enabled", lambda: False)
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
 
     resolved = rp.resolve_runtime_provider(requested="auto")
 
-    assert resolved["provider"] != "antigravity"
+    assert resolved["provider"] != "gemini-auth"
 
 
 def test_resolve_runtime_provider_ai_gateway(monkeypatch):
