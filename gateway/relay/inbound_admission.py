@@ -7,6 +7,15 @@ from hermes_state_runtime import RuntimeStoreError
 logger = logging.getLogger("gateway.relay.adapter")
 
 
+def drop_unrouted_profile_stamp(runner, event) -> None:
+    """The connector's profile route (Team Gateway) selects among a multiplexed gateway's
+    profiles; a single-profile gateway serves the event from its one profile. Clear the stamp
+    before admission so nothing durable (admission, session origin) names a profile this gateway
+    does not route by. Call after ``_capture_scope``, which keeps it for egress attribution."""
+    if event.source.profile and not getattr(runner.config, 'multiplex_profiles', False):
+        event.source.profile = None
+
+
 async def admit_relay_delivery(adapter, runner, event):
     """Admit *event*; the transport ACKs the frame once this returns, or once the returned task does.
 
@@ -15,11 +24,7 @@ async def admit_relay_delivery(adapter, runner, event):
     may await ``adapter.send()``, whose ``outbound_result`` only that reader delivers, or wait for
     another inbound message: the admission then runs in a task off the reader, after any earlier
     admission of the same chat, so one chat's deliveries still commit in arrival order."""
-    if event.source.profile and not getattr(runner.config, 'multiplex_profiles', False):
-        # The connector's profile route (Team Gateway) selects among a multiplexed
-        # gateway's profiles; a single-profile gateway serves it from its one profile.
-        # _capture_scope already kept the stamp for egress (persona attribution).
-        event.source.profile = None
+    drop_unrouted_profile_stamp(runner, event)
     from gateway.run_inbound_consumer import POST_ADMISSION_HOOK
     from hermes_cli.lifecycle import has_hook
     if not (has_hook('pre_gateway_dispatch') or has_hook(POST_ADMISSION_HOOK)):

@@ -100,6 +100,11 @@ class RelayDiscordInteractionMixin:
                     src = event.source
                     src.chat_name, src.chat_topic = await self._discord_chat_labels_for(
                         str(src.scope_id or ""), src.chat_id)
+                    runner = getattr(self._message_handler, '__self__', None)
+                    if runner is not None:
+                        # Same single-profile stamp normalization as relayed text.
+                        from gateway.relay.inbound_admission import drop_unrouted_profile_stamp
+                        drop_unrouted_profile_stamp(runner, event)
                     from gateway.session_ingress_context import relay_passthrough_event
                     with relay_passthrough_event(self._transport, forward, event):
                         await self.handle_message(event)
