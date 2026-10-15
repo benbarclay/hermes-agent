@@ -17,11 +17,6 @@ async def admit_relay_delivery(adapter, runner, event):
     admission of the same chat, so one chat's deliveries still commit in arrival order."""
     from gateway.run_inbound_consumer import POST_ADMISSION_HOOK
     from hermes_cli.lifecycle import has_hook
-    if event.source.profile and not getattr(runner.config, 'multiplex_profiles', False):
-        # The connector's profile route (Team Gateway) selects among a multiplexed
-        # gateway's profiles; a single-profile gateway serves it from its one profile.
-        # _capture_scope already kept the stamp for egress (persona attribution).
-        event.source.profile = None
     if not (has_hook('pre_gateway_dispatch') or has_hook(POST_ADMISSION_HOOK)):
         await _admit(adapter, runner, event)
         return None
