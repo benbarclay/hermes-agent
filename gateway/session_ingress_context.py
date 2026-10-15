@@ -138,10 +138,13 @@ def _binding(runner, source, profile):
             source.platform.value, guild_id=source.scope_id, chat_id=source.chat_id,
             thread_id=source.thread_id, parent_chat_id=source.parent_chat_id,
             adapter_profile=profile, user_id=source.user_id)]
-        if source.profile and source.platform.value in _PREFIX_PRODUCERS:
-            # ``/p/<profile>/`` producers address a profile explicitly on the HOST's listener; that
-            # URL prefix names the profile and wins over ``profile_routes`` (webhook.py /
-            # api_server.py stamp it; a bare producer source carries the routed name itself).
+        if source.profile and (relay or source.platform.value in _PREFIX_PRODUCERS):
+            # An explicit profile address wins over ``profile_routes``. ``/p/<profile>/`` producers
+            # name it by URL prefix on the HOST's listener (webhook.py / api_server.py stamp it; a
+            # bare producer source carries the routed name itself). A relay stamp is the
+            # connector's per-scope profile route (Team Gateway): the relay flag is set only by the
+            # authenticated WS reader or a verified seal, and the seal covers source.profile, so a
+            # stored row cannot be rerouted. An unserved profile is refused below.
             runtime_profile = source.profile
         elif matches:
             rank = max(route.specificity for route in matches)
