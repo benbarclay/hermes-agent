@@ -93,6 +93,32 @@ def carry_callback(event, rewritten):
 _PREFIX_PRODUCERS = ('webhook', 'api_server', 'msgraph_webhook')
 
 
+def _runtime_profile(runner, source, profile, owner_name, relay):
+    """The multiplexed runtime profile *source* routes to; the caller checks it is served."""
+    if source.profile and (relay or source.platform.value in _PREFIX_PRODUCERS):
+        # An explicit profile address wins over ``profile_routes``. ``/p/<profile>/`` producers
+        # name it by URL prefix on the HOST's listener (webhook.py / api_server.py stamp it; a
+        # bare producer source carries the routed name itself). A relay stamp is the connector's
+        # per-scope profile route (Team Gateway): the relay flag is set only by the authenticated
+        # WS reader or a verified seal, and the seal covers source.profile, so a stored row cannot
+        # be rerouted. An unserved profile is refused by the caller.
+        return source.profile
+    # Same matcher as ingress stamping, ``user_id`` included: a ``user_id`` route stamps the
+    # source upstream, so it must resolve here too. A route applies only to its bot_profile's
+    # bot (#104933), so the receiving adapter's owner is part of the match.
+    matches = [route for route in runner.config.profile_routes if route.matches(
+        source.platform.value, guild_id=source.scope_id, chat_id=source.chat_id,
+        thread_id=source.thread_id, parent_chat_id=source.parent_chat_id,
+        adapter_profile=profile, user_id=source.user_id)]
+    if not matches:
+        return owner_name
+    rank = max(route.specificity for route in matches)
+    best = [route for route in matches if route.specificity == rank]
+    if len(best) != 1:
+        raise RuntimeStoreError('admission_conflict')
+    return best[0].profile
+
+
 def _binding(runner, source, profile):
     registries = [(None, runner.adapters), *getattr(runner, '_profile_adapters', {}).items()]
     from gateway.config import Platform
@@ -131,29 +157,7 @@ def _binding(runner, source, profile):
         owner_name = profile or primary
         if homes.get(owner_name) != home:
             raise RuntimeStoreError('profile_mismatch')
-        # Same matcher as ingress stamping, ``user_id`` included: a ``user_id`` route stamps the
-        # source upstream, so it must resolve here too. A route applies only to its bot_profile's
-        # bot (#104933), so the receiving adapter's owner is part of the match.
-        matches = [route for route in runner.config.profile_routes if route.matches(
-            source.platform.value, guild_id=source.scope_id, chat_id=source.chat_id,
-            thread_id=source.thread_id, parent_chat_id=source.parent_chat_id,
-            adapter_profile=profile, user_id=source.user_id)]
-        if source.profile and (relay or source.platform.value in _PREFIX_PRODUCERS):
-            # An explicit profile address wins over ``profile_routes``. ``/p/<profile>/`` producers
-            # name it by URL prefix on the HOST's listener (webhook.py / api_server.py stamp it; a
-            # bare producer source carries the routed name itself). A relay stamp is the
-            # connector's per-scope profile route (Team Gateway): the relay flag is set only by the
-            # authenticated WS reader or a verified seal, and the seal covers source.profile, so a
-            # stored row cannot be rerouted. An unserved profile is refused below.
-            runtime_profile = source.profile
-        elif matches:
-            rank = max(route.specificity for route in matches)
-            best = [route for route in matches if route.specificity == rank]
-            if len(best) != 1:
-                raise RuntimeStoreError('admission_conflict')
-            runtime_profile = best[0].profile
-        else:
-            runtime_profile = owner_name
+        runtime_profile = _runtime_profile(runner, source, profile, owner_name, relay)
         if (source.profile or primary) != runtime_profile or runtime_profile not in homes:
             raise RuntimeStoreError('profile_mismatch')
         runtime_home = homes[runtime_profile]
