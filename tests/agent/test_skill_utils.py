@@ -104,14 +104,17 @@ class TestMultiprofileRawConfigCache:
         for i, home in enumerate(homes):
             _write_disabled_config(home, f"skill-{i:02d}")
         parse_count = 0
-        real_yaml_load = skill_utils.yaml_load
+        import utils
 
-        def counting_yaml_load(text):
+        real_load = utils.fast_safe_load
+
+        def counting_load(stream):
             nonlocal parse_count
             parse_count += 1
-            return real_yaml_load(text)
+            return real_load(stream)
 
-        monkeypatch.setattr(skill_utils, "yaml_load", counting_yaml_load)
+        # The file config backend parses through utils.fast_safe_load.
+        monkeypatch.setattr(utils, "fast_safe_load", counting_load)
         skill_utils._raw_config_cache_clear()
 
         for _ in range(3):
@@ -129,14 +132,17 @@ class TestMultiprofileRawConfigCache:
         _write_disabled_config(first, "old-disabled")
         _write_disabled_config(second, "second-disabled")
         parse_count = 0
-        real_yaml_load = skill_utils.yaml_load
+        import utils
 
-        def counting_yaml_load(text):
+        real_load = utils.fast_safe_load
+
+        def counting_load(stream):
             nonlocal parse_count
             parse_count += 1
-            return real_yaml_load(text)
+            return real_load(stream)
 
-        monkeypatch.setattr(skill_utils, "yaml_load", counting_yaml_load)
+        # The file config backend parses through utils.fast_safe_load.
+        monkeypatch.setattr(utils, "fast_safe_load", counting_load)
         skill_utils._raw_config_cache_clear()
         assert self._load_under(first) == ["old-disabled"]
         assert self._load_under(second) == ["second-disabled"]
@@ -162,15 +168,19 @@ class TestMultiprofileRawConfigCache:
         _write_disabled_config(first, "first-disabled")
         _write_disabled_config(second, "second-disabled")
         entered, release = Event(), Event()
-        real_yaml_load = skill_utils.yaml_load
+        import utils
 
-        def delayed_yaml_load(text):
+        real_load = utils.fast_safe_load
+
+        def delayed_load(stream):
+            text = stream.read() if hasattr(stream, "read") else stream
             if "first-disabled" in text:
                 entered.set()
                 assert release.wait(5), "first profile was not released"
-            return real_yaml_load(text)
+            return real_load(text)
 
-        monkeypatch.setattr(skill_utils, "yaml_load", delayed_yaml_load)
+        # The file config backend parses through utils.fast_safe_load.
+        monkeypatch.setattr(utils, "fast_safe_load", delayed_load)
         skill_utils._raw_config_cache_clear()
         with ThreadPoolExecutor(max_workers=2) as pool:
             first_result = pool.submit(self._load_under, first)
