@@ -148,6 +148,28 @@ state:
   It also records the turn (`hermes_scope.current_turn()`) for the body's duration, with the
   path of the session store that issued the claim, whether or not a scope is bound.
 
+### Session storage ports
+
+`hermes_state_port.py` defines the session store and turn admission as ports at
+the level today's callers use: `SessionStore` (session rows and transcripts) and
+`TurnAdmission` (the owner lock, owner epoch and each session's FIFO, whose
+claims issue turn fences). A `SessionStorageProvider` supplies both and is
+selected by `sessions.storage` in config.yaml. Empty selects the local backend
+(`hermes_state_port_local.py`): today's per-profile `state.db`, the
+`hermes_state_runtime` ledger and the `gateway.lock` owner lock. Any other name
+is a provider plugin under `plugins/session_storage/<name>/` or
+`$HERMES_HOME/plugins/<name>/`; a named provider that is missing or unavailable
+raises, and storage never falls back to the local file.
+
+Every operation reads its pin from `hermes_scope.current_scope()` when it runs.
+The local backend serves the local tenant and its own profile home only; any
+other bound scope raises `StoragePinRefused` before anything is read or written.
+With no scope bound, the pin is the ambient profile, as for every local caller
+today. `SessionStore.append_turn` is the turn-path write: it requires the
+session's claimed turn to be bound (`TurnFenceRequiredError` otherwise).
+`assert_isolating()` is the hook hosted boot calls to refuse a backend that does
+not isolate tenants in storage itself.
+
 ### Fenced turn writes
 
 While a claimed turn's body runs, every write it makes to the store that issued its claim
