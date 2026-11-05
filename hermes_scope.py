@@ -200,6 +200,33 @@ class ScopeSwitchRefused(RuntimeError):
     (``agent.runtime_scope.bind_profile_scope``)."""
 
 
+class TurnMark:
+    """The claimed turn an activity runs: its session, turn id and :class:`Fence`, and the path of
+    the store that issued the fence (``None`` when the binder could not name one).
+
+    ``agent.runtime_scope.bind_turn`` records one for the turn's body and closes it when the body
+    exits. A task or thread started inside the turn copies the context, mark included, and may
+    outlive the turn; once closed the mark no longer makes its writes the turn's, so a mark fences
+    exactly the writes made while its turn runs (``hermes_state_fence``)."""
+
+    __slots__ = ("_live", "fence", "session", "store", "turn")
+
+    def __init__(self, session: str, turn: str, fence: Fence, store: str | None) -> None:
+        self.session, self.turn, self.fence, self.store = session, turn, fence, store
+        self._live = True
+
+    @property
+    def live(self) -> bool:
+        return self._live
+
+    def close(self) -> None:
+        self._live = False
+
+    def __repr__(self) -> str:
+        return (f"TurnMark(session={self.session!r}, turn={self.turn!r}, fence={self.fence!r}, "
+                f"store={self.store!r}, live={self._live})")
+
+
 class BoundSecrets(NamedTuple):
     """An installed secret mapping plus the home it was built for, when the binder declared one:
     the provenance ``serves_routed_profile`` needs when a binding skips the home override."""
@@ -214,12 +241,14 @@ class ScopeState:
 
     ``home`` is the ``HERMES_HOME`` override (``None``: the process home). ``secrets`` is the
     secret scope (``None``: unscoped, ``os.environ`` semantics). ``terminal`` is the terminal
-    policy mapping or refusal (``None``: process env)."""
+    policy mapping or refusal (``None``: process env). ``turn`` is the claimed turn the activity
+    runs (:class:`TurnMark`), recorded whether or not a scope is bound."""
 
     scope: Scope | None = None
     home: str | None = None
     secrets: BoundSecrets | None = None
     terminal: Any = None
+    turn: TurnMark | None = None
 
 
 _EMPTY = ScopeState()
@@ -256,6 +285,12 @@ def current_state() -> ScopeState:
 def current_scope() -> Scope | None:
     """The bound scope, or ``None`` outside any scoped activity."""
     return current_state().scope
+
+
+def current_turn() -> TurnMark | None:
+    """The claimed turn the current activity runs, while that turn's body runs; else ``None``."""
+    mark = current_state().turn
+    return mark if mark is not None and mark.live else None
 
 
 class StateToken:

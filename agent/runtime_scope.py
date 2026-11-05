@@ -24,6 +24,7 @@ from hermes_scope import (
     Scope,
     ScopeSwitchRefused,
     StateToken,
+    TurnMark,
     current_scope,
     current_state,
     push_state,
@@ -170,18 +171,28 @@ def claim_fence(row: Mapping[str, Any]) -> Fence:
 
 
 @contextmanager
-def bind_turn(session_id: str, turn_id: str, fence: Fence) -> Iterator[Scope | None]:
+def bind_turn(session_id: str, turn_id: str, fence: Fence, *,
+              store: str | Path | None = None) -> Iterator[Scope | None]:
     """Mark the body as one turn of the bound scope, claimed under *fence*: the scope becomes a
     :class:`~hermes_scope.TurnScope` with the same tenant, agent, actor, owner and role; nothing
-    else changes. With no scope bound (a single-profile gateway keeps its ambient scope) this
-    binds nothing."""
+    else changes. With no scope bound (a single-profile gateway keeps its ambient scope) no scope
+    is bound either.
+
+    Either way the turn is recorded for the body's duration (:class:`~hermes_scope.TurnMark`):
+    *store* is the path of the session store that issued the claim, and while the body runs that
+    store refuses the turn's writes once the fence no longer holds its session's lease
+    (``hermes_state_fence``). The mark closes when the body exits, so work the turn started that
+    outlives it is no longer the turn's."""
+    from hermes_state_fence import store_key
+    mark = TurnMark(session_id, turn_id, fence, None if store is None else store_key(store))
     current = current_scope()
-    if current is None:
-        yield None
-        return
-    turn = current.for_turn(session_id, turn_id, fence)
-    with push_state(scope=turn):
-        yield turn
+    turn = None if current is None else current.for_turn(session_id, turn_id, fence)
+    token = push_state(turn=mark) if turn is None else push_state(scope=turn, turn=mark)
+    try:
+        with token:
+            yield turn
+    finally:
+        mark.close()
 
 
 def legacy_switch(

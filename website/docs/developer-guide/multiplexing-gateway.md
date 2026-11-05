@@ -144,7 +144,21 @@ state:
   as routed. It refuses inside a hosted scope.
 - `bind_state(scope, ...)` returns the change's token, for a host that holds it
   across calls (the TUI turn, the managed worker) or deliberately binds less.
-- `bind_turn(session_id, turn_id, fence)` marks a turn inside a bound scope.
+- `bind_turn(session_id, turn_id, fence, store=path)` marks a turn inside a bound scope.
+  It also records the turn (`hermes_scope.current_turn()`) for the body's duration, with the
+  path of the session store that issued the claim, whether or not a scope is bound.
+
+### Fenced turn writes
+
+While a claimed turn's body runs, every write it makes to the store that issued its claim
+checks the turn's fence inside the write's own transaction (`hermes_state_fence`, called from
+`SessionDB._execute_write`). If the profile's owner epoch or the session's
+`runtime_generation` has moved since the claim, the write raises
+`TurnFenceSupersededError` (a `SessionTurnLeaseLostError`) and nothing of it lands. Threads
+and tasks the turn starts are fenced while the turn runs; once the body exits the mark closes
+and their later writes run under their own guards. Writes to another profile's store,
+settlement (fenced by the owner itself), CLI/TUI turns (durable turn lease) and maintenance
+between turns are not turn writes.
 
 Inside a hosted scope, a bind must keep the tenant, agent, actor, owner and role;
 anything else raises `ScopeSwitchRefused`.
