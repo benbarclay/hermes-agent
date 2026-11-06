@@ -51,3 +51,27 @@ def test_a_relative_path_through_a_link_and_dotdot_opens_the_file_it_names(tmp_p
     assert not (tmp_path / "state.db").exists()
     with closing(SessionDB(b / "state.db")) as db:
         assert [m["content"] for m in db.get_messages("expected-b")] == ["after chdir"]
+
+
+def test_a_detour_through_a_directory_removed_later_keeps_the_handle_writable(tmp_path):
+    home = tmp_path / "home"
+    (home / "unused").mkdir(parents=True)
+    with closing(SessionDB(home / "unused" / ".." / "state.db")) as db:
+        db.create_session("s", "cli")
+        (home / "unused").rmdir()
+        db.append_message("s", "user", "after the detour went away")
+    with closing(SessionDB(home / "state.db")) as db:
+        assert [m["content"] for m in db.get_messages("s")] == ["after the detour went away"]
+
+
+def test_a_database_file_link_is_kept_as_given(tmp_path):
+    """Only the directory is resolved: the port's refusal of a file link into another profile
+    needs to see the link."""
+    real = tmp_path / "b" / "state.db"
+    real.parent.mkdir()
+    (tmp_path / "a").mkdir()
+    link = tmp_path / "a" / "state.db"
+    link.symlink_to(real)
+    with closing(SessionDB(link)) as db:
+        assert db.db_path == (tmp_path / "a").resolve() / "state.db"
+        assert db.db_path.is_symlink()
