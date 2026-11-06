@@ -1,8 +1,9 @@
-"""The session storage ports as a config-selected plugin kind, and the local backend's pin.
+"""The session storage ports as a plugin kind, and the local backend's pin.
 
-``sessions.storage`` picks the backend: empty is the local ``state.db``; a name loads a provider
-through real discovery (``$HERMES_HOME/plugins/<name>/``), and a missing one is an error, never a
-fallback to the local file. The local backend serves only the local tenant and its own profile.
+``resolve_session_storage(name)`` picks a backend by explicit name (no caller is wired to it yet):
+``"local"`` is the local ``state.db``; another name loads a provider through real discovery
+(``$HERMES_HOME/plugins/<name>/``), and a missing one is an error, never a fallback to the local
+file. The local backend serves only the local tenant and its own profile.
 """
 import textwrap
 from contextlib import closing
@@ -39,15 +40,25 @@ def register(ctx):
 '''
 
 
-def _set_storage(home, name):
-    (home / "config.yaml").write_text(f"sessions:\n  storage: {name}\n")
-
-
-def test_empty_config_selects_the_local_backend(tmp_path, monkeypatch):
+def test_local_names_the_local_backend(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    provider = resolve_session_storage()
-    assert isinstance(provider, LocalSessionStorageProvider) and provider.levels == frozenset({"agent"})
-    provider.assert_isolating()
+    for name in ("local", ""):
+        provider = resolve_session_storage(name)
+        assert isinstance(provider, LocalSessionStorageProvider) and provider.levels == frozenset({"agent"})
+        provider.assert_isolating()
+
+
+def test_a_provider_that_does_not_check_isolation_cannot_be_built():
+    class Unchecked(SessionStorageProvider):
+        @property
+        def name(self):
+            return "unchecked"
+
+        def open(self, db=None):
+            raise NotImplementedError
+
+    with pytest.raises(TypeError, match="assert_isolating"):
+        Unchecked()
 
 
 def test_a_named_provider_loads_through_discovery_and_runs_its_isolation_check(tmp_path, monkeypatch):
@@ -55,8 +66,7 @@ def test_a_named_provider_loads_through_discovery_and_runs_its_isolation_check(t
     plugin = tmp_path / "plugins" / "probe"
     plugin.mkdir(parents=True)
     (plugin / "__init__.py").write_text(textwrap.dedent(_PLUGIN))
-    _set_storage(tmp_path, "probe")
-    provider = resolve_session_storage()
+    provider = resolve_session_storage("probe")
     assert isinstance(provider, SessionStorageProvider) and provider.name == "probe"
     with pytest.raises(RuntimeError, match="bypasses row security"):
         provider.assert_isolating()
@@ -64,9 +74,8 @@ def test_a_named_provider_loads_through_discovery_and_runs_its_isolation_check(t
 
 def test_a_missing_named_provider_is_an_error_not_the_local_store(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _set_storage(tmp_path, "postgres")
     with pytest.raises(LookupError, match="postgres"):
-        resolve_session_storage()
+        resolve_session_storage("postgres")
 
 
 @pytest.fixture

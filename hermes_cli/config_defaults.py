@@ -2251,9 +2251,9 @@ DEFAULT_CONFIG = {
         # edit is sent as a fresh message so the timestamp reflects completion.
         "fresh_final_after_seconds": 0.0,
     },
-    # Session storage and the automatic cleanup of state.db (which otherwise grows without bound).
+    # Automatic cleanup of ~/.hermes/state.db, which otherwise grows without bound and slows FTS5
+    # inserts, /resume listing, and insights queries.
     "sessions": {
-        "storage": "",  # hermes_state_port backend: "" = state.db, a name = a plugin (no fallback)
         # Prune ENDED sessions inactive for retention_days (activity = freshest of live activity /
         # latest message / creation) about once per min_interval_hours at CLI/gateway/cron startup.
         # Open, pinned, or mid-turn sessions are never deleted; stale automation sessions whose

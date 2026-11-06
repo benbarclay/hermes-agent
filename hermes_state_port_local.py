@@ -8,18 +8,38 @@ A local store holds one agent and only agent-level records, so any other pin (an
 another profile) is refused with ``StoragePinRefused`` before anything is read or written. With no
 scope bound, the pin is the ambient profile (``get_hermes_home()``), as every local caller has it
 today.
+
+The store's identity is frozen when the ports open: the database file's canonical path and the
+profile home that holds it, resolved once, never recomputed against a later working directory. A
+directory alias of the profile (a symlinked home) is the same profile; a database file that is a
+link into another directory is refused at open, since its rows belong to whichever profile owns
+that directory.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from hermes_scope import LOCAL_TENANT, current_scope
 from hermes_state_port import (
-    ANY_HEAD, OwnerHandle, SessionStorage, SessionStorageProvider, SessionStore, StoragePinRefused,
-    TurnAdmission,
+    ANY_HEAD, ClaimPreconditions, OwnerHandle, SessionStorage, SessionStorageProvider, SessionStore,
+    StoragePinRefused, TurnAdmission,
 )
+
+
+def store_identity(db_path: Any) -> tuple[Path, Path]:
+    """``(canonical database file, owning profile home)`` for *db_path*, frozen now: a relative
+    path is taken against the current directory once. Refuses (``StoragePinRefused``) a database
+    file that resolves outside the directory it is named in (a file link into another profile)."""
+    named = Path(os.path.abspath(os.fspath(db_path)))
+    home = named.parent.resolve()
+    canonical = named.resolve()
+    if canonical.parent != home:
+        raise StoragePinRefused(
+            f"session store {named} is a link into {canonical.parent}, not a file of its profile {home}")
+    return canonical, home
 
 
 class _Pinned:
@@ -27,7 +47,7 @@ class _Pinned:
 
     def __init__(self, db: Any) -> None:
         self.db = db
-        self.home = Path(db.db_path).parent
+        self.db_file, self.home = store_identity(db.db_path)
 
     def _pin(self) -> None:
         from hermes_constants import get_hermes_home, hermes_home_key
@@ -87,6 +107,58 @@ class LocalSessionStore(_Pinned, SessionStore):
         self._pin()
         return bool(self.db.delete_session(session_id))
 
+    def replace_messages(self, session_id, messages, *, active_only=False, archive_dropped=False,
+                         reject_active_turn_lease=False):
+        self._pin()
+        self.db.replace_messages(session_id, messages, active_only=active_only, archive_dropped=archive_dropped,
+                                 reject_active_turn_lease=reject_active_turn_lease)
+
+    def rewind_to_message(self, session_id, target_message_id, *, preserve_compaction_handoff=False,
+                          expected_active_ids=None, expected_target_content=None):
+        self._pin()
+        return self.db.rewind_to_message(session_id, target_message_id,
+                                         preserve_compaction_handoff=preserve_compaction_handoff,
+                                         expected_active_ids=expected_active_ids,
+                                         expected_target_content=expected_target_content)
+
+    def rewind_user_turn(self, session_id, user_ordinal, **options):
+        self._pin()
+        return self.db.rewind_user_turn(session_id, user_ordinal, **options)
+
+    def set_user_message_content(self, session_id, row_id, content, display_metadata=None):
+        self._pin()
+        return self.db.set_user_message_content(session_id, row_id, content, display_metadata)
+
+    def deactivate_message(self, session_id, row_id):
+        self._pin()
+        return self.db.deactivate_message(session_id, row_id)
+
+    def set_message_reaction(self, session_id, row_id, emoji, *, author="user"):
+        self._pin()
+        return self.db.set_message_reaction(session_id, row_id, emoji, author=author)
+
+    def publish_compression_child(self, *, parent_session_id, child_session_id, source, messages, **options):
+        self._pin()
+        self.db.publish_compression_child(parent_session_id=parent_session_id, child_session_id=child_session_id,
+                                          source=source, messages=messages, **options)
+
+    def archive_and_compact(self, session_id, compacted_messages, **options):
+        self._pin()
+        return self.db.archive_and_compact(session_id, compacted_messages, **options)
+
+    def record_usage(self, session_id, *, queued=True, **counts):
+        self._pin()
+        write = self.db.queue_token_counts if queued else self.db.update_token_counts
+        write(session_id, **counts)
+
+    def record_auxiliary_usage(self, session_id, task, **counts):
+        self._pin()
+        self.db.record_auxiliary_usage(session_id, task, **counts)
+
+    def flush_usage(self, timeout=5.0):
+        self._pin()
+        return self.db.flush_token_counts(timeout)
+
 
 class _OwnerLock(OwnerHandle):
     def __init__(self, ownership: Any, home: Path) -> None:
@@ -136,18 +208,32 @@ class LocalTurnAdmission(_Pinned, TurnAdmission):
         from hermes_state_runtime import list_session_admissions
         return list_session_admissions(self.db, session_id=session_id, pending_only=pending_only)
 
-    def claim_next(self, *, epoch, session_id, head=ANY_HEAD, guard: Optional[Callable[[Any], None]] = None):
+    def claim_next(self, *, epoch, session_id, preconditions: Optional[ClaimPreconditions] = None):
         self._pin()
         from hermes_state_runtime import claim_session_input
-        if head is ANY_HEAD:
+        pre = preconditions or ClaimPreconditions()
+        gate = pre.gate
+        # The gate runs inside the claim's write transaction, after any wait for the writer.
+        guard = None if gate is None else (lambda _conn: gate.require_open())
+        if pre.head is ANY_HEAD:
             return claim_session_input(self.db, epoch=epoch, session_id=session_id, _guard=guard)
-        return claim_session_input(self.db, epoch=epoch, session_id=session_id, _guard=guard, head=head)
+        return claim_session_input(self.db, epoch=epoch, session_id=session_id, _guard=guard, head=pre.head)
 
-    def settle(self, *, epoch, admission_id, generation, outcome, result=None):
+    def steer(self, *, epoch, admission_id, generation):
+        self._pin()
+        from hermes_state_runtime import steer_session_input
+        return steer_session_input(self.db, epoch=epoch, admission_id=admission_id, generation=generation)
+
+    def revert_steer(self, *, epoch, admission_id, generation):
+        self._pin()
+        from hermes_state_runtime import revert_steer_input
+        return revert_steer_input(self.db, epoch=epoch, admission_id=admission_id, generation=generation)
+
+    def settle(self, *, epoch, admission_id, generation, outcome, result=None, transfers=None):
         self._pin()
         from hermes_state_runtime import settle_session_input
         return settle_session_input(self.db, epoch=epoch, admission_id=admission_id, generation=generation,
-                                    outcome=outcome, result=result)
+                                    outcome=outcome, result=result, _transfers=transfers)
 
     def cancel(self, *, epoch, admission_id):
         self._pin()
@@ -165,6 +251,36 @@ class LocalTurnAdmission(_Pinned, TurnAdmission):
         row = self.db.get_session(session_id)
         return None if row is None else row["runtime_generation"]
 
+    def mutate_session(self, *, epoch, principal_id, session_id, request_id, expected_revision, operation,
+                       payload, expected_generation=None):
+        self._pin()
+        from hermes_state_runtime import mutate_runtime_session
+        return mutate_runtime_session(self.db, epoch=epoch, principal_id=principal_id, session_id=session_id,
+                                      request_id=request_id, expected_revision=expected_revision,
+                                      operation=operation, payload=payload,
+                                      expected_generation=expected_generation)
+
+    def register_worker(self, *, epoch, execution_id, session_id, generation, kind, adoption_secret,
+                        require_idle=False):
+        self._pin()
+        from hermes_state_runtime import register_worker_execution
+        return register_worker_execution(self.db, epoch=epoch, execution_id=execution_id, session_id=session_id,
+                                         generation=generation, kind=kind, adoption_secret=adoption_secret,
+                                         require_idle=require_idle)
+
+    def adopt_worker(self, *, epoch, execution_id, session_id, generation, adoption_secret):
+        self._pin()
+        from hermes_state_runtime import adopt_worker_execution
+        return adopt_worker_execution(self.db, epoch=epoch, execution_id=execution_id, session_id=session_id,
+                                      generation=generation, adoption_secret=adoption_secret)
+
+    def apply_worker_op(self, *, epoch, execution_id, session_id, generation, sequence, operation, payload):
+        self._pin()
+        from hermes_state_runtime import mutate_worker_execution
+        return mutate_worker_execution(self.db, epoch=epoch, execution_id=execution_id, session_id=session_id,
+                                       generation=generation, sequence=sequence, operation=operation,
+                                       payload=payload)
+
 
 class LocalSessionStorageProvider(SessionStorageProvider):
     """Today's storage: one ``state.db`` per profile home, holding that agent's records only."""
@@ -177,16 +293,22 @@ class LocalSessionStorageProvider(SessionStorageProvider):
 
     def open(self, db: Any = None) -> SessionStorage:
         """Ports over *db*, or over the bound profile's shared ``state.db`` (released on
-        ``close``). The pin is checked by every operation, not here."""
+        ``close``). The store's file and profile are frozen here (``store_identity``; a file link
+        into another directory is refused now); the pin is checked by every operation."""
         if db is not None:
             return SessionStorage(LocalSessionStore(db), LocalTurnAdmission(db))
         from hermes_constants import get_hermes_home
         from hermes_state_registry import acquire, release
         shared = acquire(get_hermes_home() / "state.db")
+        try:
+            sessions, admission = LocalSessionStore(shared), LocalTurnAdmission(shared)
+        except BaseException:
+            release(shared)
+            raise
 
         def close() -> None:
             release(shared)
-        return SessionStorage(LocalSessionStore(shared), LocalTurnAdmission(shared), close)
+        return SessionStorage(sessions, admission, close)
 
     def assert_isolating(self) -> None:
         """A local store is one file per profile and refuses every pin but its own (``_Pinned``);
