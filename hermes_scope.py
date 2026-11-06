@@ -200,31 +200,46 @@ class ScopeSwitchRefused(RuntimeError):
     (``agent.runtime_scope.bind_profile_scope``)."""
 
 
+@dataclass(frozen=True)
 class TurnMark:
-    """The claimed turn an activity runs: its session, turn id and :class:`Fence`, and the path of
-    the store that issued the fence (``None`` when the binder could not name one).
+    """The claimed turn an activity's writes belong to: its session, turn id and :class:`Fence`, and
+    the store that issued the fence (its resolved ``state.db`` path; ``None`` when no local store is
+    named, as for a hosted scope), and whether it is work that outlives the turn.
 
-    ``agent.runtime_scope.bind_turn`` records one for the turn's body and closes it when the body
-    exits. A task or thread started inside the turn copies the context, mark included, and may
-    outlive the turn; once closed the mark no longer makes its writes the turn's, so a mark fences
-    exactly the writes made while its turn runs (``hermes_state_fence``)."""
+    It is the storage provenance of the bound :class:`TurnScope` (:func:`current_turn`), immutable,
+    and never closes: a task or thread the turn starts copies the context and stays the turn's work
+    for its whole lifetime, so its writes are refused once the turn's lease is gone, also after the
+    turn's body returned (``hermes_state_fence``). Work the owner runs under its own guards
+    (settlement, the ledger, drains) runs under ``agent.runtime_scope.owner_operation`` instead."""
 
-    __slots__ = ("_live", "fence", "session", "store", "turn")
+    session: str
+    turn: str
+    fence: Fence
+    store: str | None
+    #: Work designed to outlive the turn (``agent.runtime_scope.outlive_turn``): held to the owner
+    #: epoch only, so a takeover still refuses it but the session's next claim does not.
+    outlives: bool = False
 
-    def __init__(self, session: str, turn: str, fence: Fence, store: str | None) -> None:
-        self.session, self.turn, self.fence, self.store = session, turn, fence, store
-        self._live = True
 
-    @property
-    def live(self) -> bool:
-        return self._live
+class _OwnerOperation:
+    """``ScopeState.turn`` inside ``agent.runtime_scope.owner_operation``: no turn's work."""
 
-    def close(self) -> None:
-        self._live = False
+    __slots__ = ()
 
     def __repr__(self) -> str:
-        return (f"TurnMark(session={self.session!r}, turn={self.turn!r}, fence={self.fence!r}, "
-                f"store={self.store!r}, live={self._live})")
+        return "OWNER_OPERATION"
+
+
+OWNER_OPERATION: Any = _OwnerOperation()
+
+
+def scope_store(scope: Scope | None) -> str | None:
+    """The store a local scope's turns are fenced on: its profile's ``state.db``, resolved
+    (``hermes_constants.hermes_home_key``). ``None`` for a hosted scope or none."""
+    if scope is None or not scope.is_local:
+        return None
+    from hermes_constants import hermes_home_key  # import-safe; lazy to keep this module stdlib-only
+    return hermes_home_key(f"{scope.agent.rstrip('/')}/state.db")
 
 
 class BoundSecrets(NamedTuple):
@@ -241,14 +256,15 @@ class ScopeState:
 
     ``home`` is the ``HERMES_HOME`` override (``None``: the process home). ``secrets`` is the
     secret scope (``None``: unscoped, ``os.environ`` semantics). ``terminal`` is the terminal
-    policy mapping or refusal (``None``: process env). ``turn`` is the claimed turn the activity
-    runs (:class:`TurnMark`), recorded whether or not a scope is bound."""
+    policy mapping or refusal (``None``: process env). ``turn`` is the storage provenance of the
+    claimed turn the activity runs (:class:`TurnMark`, recorded whether or not a scope is bound), or
+    :data:`OWNER_OPERATION` for the owner's own work; read it through :func:`current_turn`."""
 
     scope: Scope | None = None
     home: str | None = None
     secrets: BoundSecrets | None = None
     terminal: Any = None
-    turn: TurnMark | None = None
+    turn: Any = None  # TurnMark | OWNER_OPERATION | None
 
 
 _EMPTY = ScopeState()
@@ -288,9 +304,21 @@ def current_scope() -> Scope | None:
 
 
 def current_turn() -> TurnMark | None:
-    """The claimed turn the current activity runs, while that turn's body runs; else ``None``."""
-    mark = current_state().turn
-    return mark if mark is not None and mark.live else None
+    """The claimed turn the current activity's writes belong to, else ``None``.
+
+    One identity: a bound :class:`TurnScope` is the turn, and its mark (``bind_turn``) only adds the
+    issuing store; a TurnScope bound without one is fenced on its profile's store
+    (:func:`scope_store`). With no scope bound (a single-profile gateway's turn) the mark alone is
+    the turn. ``None`` inside an owner operation or outside any turn."""
+    state = current_state()
+    mark, scope = state.turn, state.scope
+    if mark is OWNER_OPERATION:
+        return None
+    if isinstance(scope, TurnScope):
+        if mark is not None and (mark.session, mark.turn, mark.fence) == (scope.session, scope.turn, scope.fence):
+            return mark
+        return TurnMark(scope.session, scope.turn, scope.fence, scope_store(scope))
+    return mark
 
 
 class StateToken:

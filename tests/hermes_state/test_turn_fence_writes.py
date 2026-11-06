@@ -11,7 +11,7 @@ from contextlib import closing
 import pytest
 
 import hermes_state_runtime as rt
-from agent.runtime_scope import bind_profile_scope, bind_turn, claim_fence
+from agent.runtime_scope import bind_profile_scope, bind_turn, claim_fence, owner_operation
 from hermes_state import SessionDB
 from hermes_state_errors import SessionTurnLeaseLostError, TurnFenceSupersededError
 from tests.hermes_state.test_target_advance_fence import _local_session
@@ -87,9 +87,12 @@ def test_writes_outside_a_claimed_turn_are_unaffected(store, tmp_path):
     _move_generation(store, sid)
     with bind_profile_scope(tmp_path):  # the profile bound, no turn: maintenance, notes, CLI
         store.append_message(sid, 'user', 'outside')
-    with bind_profile_scope(tmp_path), bind_turn(sid, row['admission_id'], claim_fence(row), store=None):
-        store.append_message(sid, 'user', 'unnamed store')  # a mark naming no store fences nothing
-    assert _snapshot(store, sid) == (['outside', 'unnamed store'], 2)
+    with bind_turn(sid, row['admission_id'], claim_fence(row), store=None):
+        store.append_message(sid, 'user', 'unnamed store')  # no scope and no store: nothing to fence
+    with bind_profile_scope(tmp_path), bind_turn(sid, row['admission_id'], claim_fence(row)):
+        with owner_operation():  # the owner's own work in a turn's context
+            store.append_message(sid, 'user', 'owner')
+    assert _snapshot(store, sid) == (['outside', 'unnamed store', 'owner'], 3)
 
 
 def test_a_turn_fences_only_the_store_that_issued_it(store, tmp_path):
@@ -107,7 +110,7 @@ def test_a_turn_fences_only_the_store_that_issued_it(store, tmp_path):
     assert _snapshot(store, sid) == ([], 0)
 
 
-def test_a_thread_the_turn_started_is_fenced_only_while_the_turn_runs(store, tmp_path):
+def test_a_thread_the_turn_started_stays_fenced_after_the_turn_returns(store, tmp_path):
     sid, row = _claimed(store, tmp_path)
     go, done = threading.Event(), threading.Event()
     results = []
@@ -122,17 +125,17 @@ def test_a_thread_the_turn_started_is_fenced_only_while_the_turn_runs(store, tmp
         done.set()
 
     with bind_turn(sid, row['admission_id'], claim_fence(row), store=store.db_path):
-        during = contextvars.copy_context()
+        current = contextvars.copy_context()
         later = contextvars.copy_context()
-        _move_generation(store, sid)
-        threading.Thread(target=during.run, args=(background,)).start()
-        go.set()
-        assert done.wait(10)
-        go.clear()
-        done.clear()
-        threading.Thread(target=later.run, args=(background,)).start()
-    # The turn ended; the thread it started still carries its (now closed) mark.
+    # The turn's body returned; the first thread still holds the lease and writes.
+    threading.Thread(target=current.run, args=(background,)).start()
     go.set()
     assert done.wait(10)
-    assert results == ['refused', 'written']
+    go.clear()
+    done.clear()
+    _move_generation(store, sid)
+    threading.Thread(target=later.run, args=(background,)).start()
+    go.set()
+    assert done.wait(10)
+    assert results == ['written', 'refused']
     assert _snapshot(store, sid) == (['late'], 1)
