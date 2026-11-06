@@ -590,7 +590,9 @@ class SessionDB(
         # detour through a directory that is later removed does not strand the handle). The
         # file name is never resolved, so the local storage port still sees a database-file link.
         requested = os.fspath(db_path or _default_db_path())
-        directory, name = os.path.split(os.path.join(os.getcwd(), requested))
+        if not os.path.isabs(requested):  # an absolute open never depends on the working directory
+            requested = os.path.join(os.getcwd(), requested)
+        directory, name = os.path.split(requested)
         self.db_path = Path(os.path.realpath(directory)) / name
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
