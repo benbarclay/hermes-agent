@@ -584,8 +584,13 @@ class SessionDB(
 
     def __init__(self, db_path: Path | None = None, read_only: bool = False):
         # Absolute, frozen now: a relative path names another file once the working directory
-        # changes, and neither a reconnect nor the handle's identity may follow it there.
-        self.db_path = Path(os.path.abspath(os.fspath(db_path or _default_db_path())))
+        # changes, and neither a reconnect nor the handle's identity may follow it there. Joined,
+        # never normalised: '..' after a directory link leaves the link's target, so collapsing
+        # it lexically (abspath/normpath) would open a different file.
+        requested = os.fspath(db_path or _default_db_path())
+        if not os.path.isabs(requested):
+            requested = os.path.join(os.getcwd(), requested)
+        self.db_path = Path(requested)
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
         # Keep only the opening call site, never a frame (which pins caller locals).
