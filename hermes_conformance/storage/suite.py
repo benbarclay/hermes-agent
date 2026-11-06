@@ -8,12 +8,16 @@ Covered:
 
 - pinning: every mutating operation of both ports (:data:`SESSION_WRITES`, :data:`ADMISSION_WRITES`)
   is refused for another agent, another tenant and no pin, and a refusal changes nothing the
-  agent can observe through the ports (:func:`observe`); a foreign row reads like a missing one;
-- turn fences: every session write a turn makes (:data:`TURN_WRITES`) is refused whole inside a
-  claimed turn whose owner epoch or generation moved, including a takeover that commits from
+  agent can observe through the ports (:func:`observe`: rows, transcripts, titles, admissions,
+  generations, and auxiliary usage per task); a foreign row reads like a missing one;
+- turn fences: every session write a turn makes (:data:`TURN_WRITES`, session creation and the
+  upsert of an existing row included) is refused whole inside a claimed turn whose owner epoch or
+  generation moved, with no accounting left behind, including a takeover that commits from
   another replica while the write waits for the writer (transaction-local, not a preflight);
-- claims: a moved head claims nothing, a refusing gate rolls the claim back, one FIFO per session
-  across producers admitting and claiming through different replicas, one writer per session;
+- claims: a moved head claims nothing, a refusing gate rolls the claim back, a gate that closes
+  while the claim waits for the writer still refuses it (asked inside the claim's transaction,
+  not before it), one FIFO per session across producers admitting and claiming through different
+  replicas, one writer per session;
 - owners: one owner per agent across replicas, release and reacquisition, independent agents
   owned side by side, owner exclusion kept apart from per-session claim exclusion;
 - the owner epoch fences every ledger operation (:data:`EPOCH_FENCED`); a lost turn becomes
@@ -65,6 +69,8 @@ class Backend:
       ``__enter__`` returns a ``threading.Event`` the backend sets once a write is waiting behind
       the hold; on exit another owner's takeover (a new owner epoch) commits before the hold is
       released. Required: without it the contending-takeover test fails.
+    - ``hold_writer(agent)``: the same hold, released on exit having changed nothing. Required:
+      without it the contended-gate test fails.
     """
 
     open: Callable[[str], SessionStorage]
@@ -74,6 +80,7 @@ class Backend:
     unbound: Callable[[], AbstractContextManager]
     turn: Callable[[SessionStorage, str, dict], AbstractContextManager]
     contend_takeover: Optional[Callable[[str], AbstractContextManager]] = None
+    hold_writer: Optional[Callable[[str], AbstractContextManager]] = None
 
 
 def _elsewhere(fn: Callable[[], Any]) -> Any:
@@ -171,7 +178,8 @@ _OBSERVED_SESSIONS = ("s1", "s2", "s3", "c1", "idle")
 
 def observe(backend, storage):
     """Everything about agent ``a`` the ports expose: its sessions, rows, titles, transcripts,
-    usage, admissions and generations. A refused operation must leave all of it unchanged."""
+    usage (the session's counters and its auxiliary usage per task), admissions and generations.
+    A refused operation must leave all of it unchanged."""
     s, a = storage.sessions, storage.admission
     with backend.bind("a"):
         s.flush_usage()
@@ -181,6 +189,7 @@ def observe(backend, storage):
             state[sid] = None if row is None else {
                 "row": row, "title": s.get_title(sid), "generation": a.generation(sid),
                 "messages": s.read_conversation(sid, include_row_ids=True),
+                "auxiliary_usage": s.read_auxiliary_usage(sid),
                 "admissions": a.list(sid, pending_only=False)}
     return state
 
@@ -188,6 +197,7 @@ def observe(backend, storage):
 #: Every mutating SessionStore operation, with arguments that succeed in a :class:`World`.
 SESSION_WRITES: dict[str, Callable[[SessionStorage, World], Any]] = {
     "create": lambda st, w: st.sessions.create("s3", "cli"),
+    "create_existing": lambda st, w: st.sessions.create("s1", "cli", model="m"),
     "end": lambda st, w: st.sessions.end("s1", "user_exit"),
     "append": lambda st, w: st.sessions.append("s1", [{"role": "user", "content": "x"}]),
     "append_turn": lambda st, w: st.sessions.append_turn("s1", [{"role": "assistant", "content": "x"}]),
@@ -242,8 +252,9 @@ ADMISSION_WRITES: dict[str, Callable[[SessionStorage, World], Any]] = {
 ALL_WRITES = {**{f"sessions.{k}": v for k, v in SESSION_WRITES.items()},
               **{f"admission.{k}": v for k, v in ADMISSION_WRITES.items()}}
 
-#: The session writes a claimed turn makes. A turn that lost its lease lands none of them.
-TURN_WRITES = {k: v for k, v in SESSION_WRITES.items() if k not in ("create",)}
+#: The session writes a claimed turn makes: all of them, creating a session (a child, a fork)
+#: included. A turn that lost its lease lands none of them.
+TURN_WRITES = dict(SESSION_WRITES)
 #: Turn writes whose refusal is silent: queued accounting is dropped (and logged), never raised
 #: into the turn; it still lands nothing.
 SILENT_TURN_WRITES = frozenset({"record_usage_queued"})
@@ -258,8 +269,7 @@ _NO_POSITIVE_CONTROL = frozenset({"admission.resolve_unknown"})
 #: Operations that succeed in a :class:`World` without changing what :func:`observe` reads (owner
 #: epochs, worker rows, an empty claim).
 _NO_VISIBLE_CHANGE = frozenset({"admission.begin_epoch", "admission.recover", "admission.adopt_worker",
-                                "admission.claim_next", "admission.register_worker",
-                                "sessions.record_auxiliary_usage"})
+                                "admission.claim_next", "admission.register_worker"})
 
 
 class _Gate(AdmissionGate):
@@ -310,6 +320,7 @@ class PinningConformance:
         with backend.unbound():
             _refused(lambda: storage.sessions.get("s1"))
             _refused(lambda: storage.sessions.read_conversation("s1"))
+            _refused(lambda: storage.sessions.read_auxiliary_usage("s1"))
             _refused(lambda: storage.sessions.list_sessions())
             _refused(lambda: storage.admission.list("s1"))
             _refused(lambda: storage.admission.acquire_owner())
@@ -448,6 +459,40 @@ class AdmissionConformance:
             claimed = storage.admission.claim_next(epoch=epoch, session_id="s1",
                                                    preconditions=ClaimPreconditions(gate=opened))
         assert opened.calls >= 1 and claimed["admission_id"] == row["admission_id"]
+
+    def test_a_gate_that_closes_while_the_claim_waits_still_refuses_it(self, backend):
+        """The gate is asked inside the claim's own transaction: a drain that begins after the
+        claim was issued, while it waits for the writer, refuses it. A preflight gate would pass."""
+        assert backend.hold_writer is not None, "the backend fixture must supply hold_writer"
+        storage, epoch, _none = _owned_claim(backend, "a", requests=())
+        with backend.bind("a"):
+            row = storage.admission.admit(epoch=epoch, principal_id="human", session_id="s1", request_id="r1",
+                                          payload={})
+        before = observe(backend, storage)
+        gate, outcome = _Gate(), {}
+
+        def claim():
+            try:
+                with backend.bind("a"):
+                    outcome["claimed"] = storage.admission.claim_next(
+                        epoch=epoch, session_id="s1",
+                        preconditions=ClaimPreconditions(head=row["admission_id"], gate=gate))
+            except PermissionError as exc:
+                outcome["refused"] = exc
+        worker = _replica_thread(claim)
+        with backend.hold_writer("a") as waiting:
+            worker.start()
+            assert waiting.wait(10), "the claim never waited behind the contending replica"
+            gate.closed = True  # the owner starts draining while the claim waits
+        worker.join(30)
+        assert not worker.is_alive()
+        assert "claimed" not in outcome and "refused" in outcome
+        assert not isinstance(outcome["refused"], StoragePinRefused)
+        assert observe(backend, storage) == before
+        with backend.bind("a"):
+            claimed = storage.admission.claim_next(epoch=epoch, session_id="s1",
+                                                   preconditions=ClaimPreconditions(gate=_Gate()))
+        assert claimed["admission_id"] == row["admission_id"]
 
     def test_one_fifo_per_session(self, backend):
         storage, epoch, first = _owned_claim(backend, "a", requests=("r1", "r2", "r3"))

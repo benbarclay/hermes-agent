@@ -219,6 +219,7 @@ def test_every_further_operation_is_pinned(queued, tmp_path):
                                             messages=[]),
         lambda: s.archive_and_compact("s1", []), lambda: s.record_usage("s1", input_tokens=1),
         lambda: s.record_auxiliary_usage("s1", "title", input_tokens=1), lambda: s.flush_usage(),
+        lambda: s.read_auxiliary_usage("s1"),
         lambda: a.steer(epoch=epoch, admission_id=rows[1]["admission_id"], generation=1),
         lambda: a.revert_steer(epoch=epoch, admission_id=rows[1]["admission_id"], generation=1),
         lambda: a.mutate_session(epoch=epoch, principal_id="u", session_id="s1", request_id="m",
@@ -249,6 +250,8 @@ def test_transcript_usage_and_compression_operations_are_todays_writes(queued):
     s.record_usage("s1", input_tokens=1)
     assert s.flush_usage()
     s.record_auxiliary_usage("s1", "title", model="m", input_tokens=3)
+    assert s.read_auxiliary_usage("s1") == db.auxiliary_usage_by_task("s1")
+    assert s.read_auxiliary_usage("s1")["title"]["input_tokens"] == 3
     assert db.get_session("s1")["input_tokens"] == 6
     assert s.rewind_to_message("s1", first)["rewound_count"] == 2
     assert [m["content"] for m in s.read_conversation("s1")] == []

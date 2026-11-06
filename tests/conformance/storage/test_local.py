@@ -48,9 +48,10 @@ def local_backend(tmp_path, monkeypatch):
         return bind_state(Scope("acme", str(homes[agent]), Principal("u"), owner=Group("g"), role="member"))
 
     @contextmanager
-    def contend_takeover(agent):
+    def contend(agent, takeover):
         """Another replica holds the writer; once a write waits behind it, that replica's
-        transaction takes the profile over (a new owner epoch) and commits."""
+        transaction takes the profile over (a new owner epoch) and commits, or with no
+        *takeover* releases the writer having changed nothing."""
         waiting = threading.Event()
         for db in handles:
             real = db._sleep_before_write_retry
@@ -63,7 +64,8 @@ def local_backend(tmp_path, monkeypatch):
         holder.execute("BEGIN IMMEDIATE")
         try:
             yield waiting
-            holder.execute("UPDATE runtime_epoch SET epoch=epoch+1, instance_id='contender' WHERE singleton=1")
+            if takeover:
+                holder.execute("UPDATE runtime_epoch SET epoch=epoch+1, instance_id='contender' WHERE singleton=1")
             holder.execute("COMMIT")
         except BaseException:
             holder.execute("ROLLBACK")
@@ -73,7 +75,8 @@ def local_backend(tmp_path, monkeypatch):
 
     backend = Backend(open=connect, replica=connect, bind=lambda agent: bind_profile_scope(homes[agent]),
                       foreign_tenant=foreign_tenant, unbound=unbound, turn=turn,
-                      contend_takeover=contend_takeover)
+                      contend_takeover=lambda agent: contend(agent, True),
+                      hold_writer=lambda agent: contend(agent, False))
     return backend, handles
 
 

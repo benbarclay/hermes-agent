@@ -163,6 +163,12 @@ class SessionStore(ABC):
         attributed to *task*, without touching the session's main counters."""
 
     @abstractmethod
+    def read_auxiliary_usage(self, session_id: str) -> dict[str, dict[str, Any]]:
+        """The auxiliary usage recorded against the session, per task: ``{task: {"api_calls",
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+        "reasoning_tokens", "estimated_cost_usd"}}``."""
+
+    @abstractmethod
     def flush_usage(self, timeout: float = 5.0) -> bool:
         """Wait until every queued usage write has landed; ``False`` on timeout."""
 

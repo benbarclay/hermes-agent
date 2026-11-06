@@ -1,7 +1,8 @@
 """Broken local backends the storage conformance suite must reject (``test_mutants.py``).
 
-The first five are the adversarial review's: each passed the earlier suite. ``preflight_fence``
-checks the turn fence before the write's transaction instead of inside it. Each mutant is applied
+Each passed an earlier version of the suite. ``preflight_fence`` checks the turn fence before the
+write's transaction instead of inside it; ``unfenced_create``, ``auxiliary_committed_before_refusal``
+and ``preflight_gate`` are the create, accounting and admission-gate holes. Each mutant is applied
 by the ``backend`` fixture when ``HERMES_STORAGE_MUTANT`` names it.
 """
 
@@ -86,6 +87,58 @@ def _preflight_fence(monkeypatch):
     monkeypatch.setattr(hermes_state.SessionDB, "_execute_write", execute_write)
 
 
+def _unfenced_create(monkeypatch):
+    """create keeps the pin check but writes outside the bound turn, so a superseded turn's
+    create lands."""
+    from agent.runtime_scope import bind_profile_scope
+    from hermes_state_port_local import LocalSessionStore
+    original = LocalSessionStore.create
+
+    def create(self, *args, **kwargs):
+        self._pin()
+
+        def write():
+            with bind_profile_scope(self.home):
+                return original(self, *args, **kwargs)
+        return contextvars.Context().run(write)
+    monkeypatch.setattr(LocalSessionStore, "create", create)
+
+
+def _auxiliary_committed_before_refusal(monkeypatch):
+    """A refused auxiliary usage write commits the usage outside the turn, then re-raises the
+    refusal: the caller sees the refusal, the accounting changed anyway."""
+    from agent.runtime_scope import bind_profile_scope
+    from hermes_state_errors import SessionTurnLeaseLostError
+    from hermes_state_port_local import LocalSessionStore
+    original = LocalSessionStore.record_auxiliary_usage
+
+    def record(self, session_id, task, **counts):
+        try:
+            return original(self, session_id, task, **counts)
+        except SessionTurnLeaseLostError:
+            def leak():
+                with bind_profile_scope(self.home):
+                    return original(self, session_id, task, **counts)
+            contextvars.Context().run(leak)
+            raise
+    monkeypatch.setattr(LocalSessionStore, "record_auxiliary_usage", record)
+
+
+def _preflight_gate(monkeypatch):
+    """claim_next asks the admission gate before the claim's transaction, not inside it: a drain
+    that begins while the claim waits for the writer is missed."""
+    import dataclasses
+    from hermes_state_port_local import LocalTurnAdmission
+    original = LocalTurnAdmission.claim_next
+
+    def claim_next(self, *, epoch, session_id, preconditions=None):
+        if preconditions is not None and preconditions.gate is not None:
+            preconditions.gate.require_open()
+            preconditions = dataclasses.replace(preconditions, gate=None)
+        return original(self, epoch=epoch, session_id=session_id, preconditions=preconditions)
+    monkeypatch.setattr(LocalTurnAdmission, "claim_next", claim_next)
+
+
 MUTANTS = {
     "foreign_metadata": _foreign_metadata,
     "ignored_claim_preconditions": _ignored_claim_preconditions,
@@ -93,6 +146,9 @@ MUTANTS = {
     "no_owner_exclusion": _no_owner_exclusion,
     "producer_partitioned_fifo": _producer_partitioned_fifo,
     "preflight_fence": _preflight_fence,
+    "unfenced_create": _unfenced_create,
+    "auxiliary_committed_before_refusal": _auxiliary_committed_before_refusal,
+    "preflight_gate": _preflight_gate,
 }
 
 

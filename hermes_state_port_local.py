@@ -165,6 +165,10 @@ class LocalSessionStore(_Pinned, SessionStore):
         self._pin()
         self.db.record_auxiliary_usage(session_id, task, **counts)
 
+    def read_auxiliary_usage(self, session_id):
+        self._pin()
+        return self.db.auxiliary_usage_by_task(session_id)
+
     def flush_usage(self, timeout=5.0):
         self._pin()
         return self.db.flush_token_counts(timeout)
