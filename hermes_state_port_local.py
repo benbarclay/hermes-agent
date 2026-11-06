@@ -33,7 +33,15 @@ from hermes_state_port import (
 
 
 def store_identity(db: Any) -> tuple[Path, Path]:
-    """``(canonical database file, owning profile home)`` of the file handle *db* opened: its
+    """Threat model: the pin guards against Hermes code binding the wrong scope to a store, not
+    against the machine's owner rearranging their own files under a running process. The local
+    backend serves only the local tenant, whose person owns every profile on this machine, so
+    moving a directory alias, renaming or replacing a profile directory, or hard-linking one
+    profile's database into another after it was opened is out of scope: the identity is fixed
+    once, here, at wrap time, from a path that must still name the file the handle opened.
+    A hosted backend never derives a tenant's identity from a filesystem path.
+
+    ``(canonical database file, owning profile home)`` of the file handle *db* opened: its
     ``db_path``, which ``SessionDB`` makes absolute when the handle is created, never re-read
     against a later working directory. Refuses (``StoragePinRefused``) a handle whose path is
     relative (which file it opened cannot be established now) and a database file that resolves
