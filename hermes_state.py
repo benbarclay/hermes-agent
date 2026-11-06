@@ -583,17 +583,7 @@ class SessionDB(
             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
 
     def __init__(self, db_path: Path | None = None, read_only: bool = False):
-        # Frozen now as the real directory plus the file name as given. A relative path names
-        # another file once the working directory changes, so neither a reconnect nor the
-        # handle's identity may follow it there. The directory is resolved the way the kernel
-        # walks it (realpath, so '..' after a directory link leaves the link's target, and a
-        # detour through a directory that is later removed does not strand the handle). The
-        # file name is never resolved, so the local storage port still sees a database-file link.
-        requested = os.fspath(db_path or _default_db_path())
-        if not os.path.isabs(requested):  # an absolute open never depends on the working directory
-            requested = os.path.join(os.getcwd(), requested)
-        directory, name = os.path.split(requested)
-        self.db_path = Path(os.path.realpath(directory)) / name
+        self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
         # Keep only the opening call site, never a frame (which pins caller locals).

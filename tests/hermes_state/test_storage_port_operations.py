@@ -41,41 +41,22 @@ def test_a_database_file_linked_into_another_profile_is_refused_at_open(tmp_path
         assert victim.get_session_title("secret") is None
 
 
-def test_a_relative_store_path_keeps_the_profile_it_was_opened_in(tmp_path, monkeypatch):
-    a, b = tmp_path / "a", tmp_path / "b"
-    a.mkdir(), b.mkdir()
-    monkeypatch.chdir(a)
-    with closing(SessionDB(Path("state.db"))) as db:
-        db.create_session("secret", "cli")
-        storage = _open(db)
-        monkeypatch.chdir(b)
-        with bind_profile_scope(b, hydrate_secrets=False):
-            with pytest.raises(StoragePinRefused):
-                storage.sessions.get("secret")
-        with bind_profile_scope(a, hydrate_secrets=False):
-            assert storage.sessions.get("secret")["id"] == "secret"
-        monkeypatch.chdir(a)
-
-
-def test_a_relative_handle_wrapped_after_the_directory_changed_keeps_the_profile_it_opened(
-        tmp_path, monkeypatch):
-    """The handle was opened in A by a relative path; the ports are made only after the working
-    directory moved to B. They are A's: B's scope reads nothing of A's."""
+def test_a_handle_opened_by_a_relative_path_is_refused(tmp_path, monkeypatch):
+    """Which file a relative handle opened depends on a working directory that may since have
+    moved, so the ports refuse it, whether wrapped before or after the move; the handle itself
+    keeps working exactly as it always has."""
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir(), b.mkdir()
     monkeypatch.chdir(a)
     with closing(SessionDB(Path("state.db"))) as db:
         db.create_session("secret-a", "cli")
+        with pytest.raises(StoragePinRefused, match="which file"):
+            _open(db)
         monkeypatch.chdir(b)
-        storage = _open(db)
-        assert storage.sessions.home == a.resolve()
-        with bind_profile_scope(b, hydrate_secrets=False):
-            with pytest.raises(StoragePinRefused):
-                storage.sessions.get("secret-a")
-        with bind_profile_scope(a, hydrate_secrets=False):
-            assert storage.sessions.get("secret-a")["id"] == "secret-a"
-        assert not (b / "state.db").exists()
+        with pytest.raises(StoragePinRefused, match="which file"):
+            _open(db)
         monkeypatch.chdir(a)
+        assert db.get_session("secret-a")["id"] == "secret-a"
 
 
 def test_a_handle_that_does_not_record_its_opened_file_is_refused():

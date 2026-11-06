@@ -2,8 +2,8 @@
 
 A path such as ``A/link/../state.db`` where ``link`` is a directory symlink into ``B/child``
 names ``B/state.db``: the kernel follows ``link`` before applying ``..``. Collapsing ``..``
-lexically would open (and create) ``A/state.db`` instead and show an empty history. A relative
-path is still fixed to the working directory it was opened in.
+lexically would open (and create) ``A/state.db`` instead and show an empty history. These pin the
+constructor to today's behaviour: it keeps the path it is given and lets the kernel walk it.
 """
 import os
 import subprocess
@@ -45,41 +45,21 @@ def test_a_relative_path_through_a_link_and_dotdot_opens_the_file_it_names(tmp_p
     with closing(SessionDB(Path("link") / ".." / "state.db")) as db:
         row = db.get_session("expected-b")
         assert row is not None and row["id"] == "expected-b"
-        # Still the same file after the working directory moves on.
-        monkeypatch.chdir(tmp_path)
-        db.append_message("expected-b", "user", "after chdir")
-        storage = LocalSessionStorageProvider().open(db)
-        assert storage.sessions.home == b.resolve()  # type: ignore[attr-defined]
-        with bind_profile_scope(b, hydrate_secrets=False):
-            assert storage.sessions.get("expected-b")["id"] == "expected-b"
+        db.append_message("expected-b", "user", "through the link")
     assert not (a / "state.db").exists()
-    assert not (tmp_path / "state.db").exists()
     with closing(SessionDB(b / "state.db")) as db:
-        assert [m["content"] for m in db.get_messages("expected-b")] == ["after chdir"]
-
-
-def test_a_detour_through_a_directory_removed_later_keeps_the_handle_writable(tmp_path):
-    home = tmp_path / "home"
-    (home / "unused").mkdir(parents=True)
-    with closing(SessionDB(home / "unused" / ".." / "state.db")) as db:
-        db.create_session("s", "cli")
-        (home / "unused").rmdir()
-        db.append_message("s", "user", "after the detour went away")
-    with closing(SessionDB(home / "state.db")) as db:
-        assert [m["content"] for m in db.get_messages("s")] == ["after the detour went away"]
-
+        assert [m["content"] for m in db.get_messages("expected-b")] == ["through the link"]
 
 def test_a_database_file_link_is_kept_as_given(tmp_path):
-    """Only the directory is resolved: the port's refusal of a file link into another profile
-    needs to see the link."""
+    """The handle keeps the path as given: the port's refusal of a file link into another
+    profile needs to see the link."""
     real = tmp_path / "b" / "state.db"
     real.parent.mkdir()
     (tmp_path / "a").mkdir()
     link = tmp_path / "a" / "state.db"
     link.symlink_to(real)
     with closing(SessionDB(link)) as db:
-        assert db.db_path == (tmp_path / "a").resolve() / "state.db"
-        assert db.db_path.is_symlink()
+        assert Path(db.db_path).is_symlink()
 
 
 _FROM_REMOVED_CWD = """
