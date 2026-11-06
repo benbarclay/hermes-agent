@@ -583,7 +583,9 @@ class SessionDB(
             logger.warning("%s close failed for %s: %s", label, self.db_path, exc)
 
     def __init__(self, db_path: Path | None = None, read_only: bool = False):
-        self.db_path = db_path or _default_db_path()
+        # Absolute, frozen now: a relative path names another file once the working directory
+        # changes, and neither a reconnect nor the handle's identity may follow it there.
+        self.db_path = Path(os.path.abspath(os.fspath(db_path or _default_db_path())))
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
         # Keep only the opening call site, never a frame (which pins caller locals).

@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from agent.runtime_scope import bind_profile_scope, bind_state
-from hermes_scope import Group, Principal, Scope
+from hermes_scope import Group, Principal, Scope, push_state
 from hermes_state import SessionDB
 from hermes_state_port import ANY_HEAD, AdmissionGate, ClaimPreconditions, StoragePinRefused
 from hermes_state_port_local import LocalSessionStorageProvider
@@ -55,6 +55,51 @@ def test_a_relative_store_path_keeps_the_profile_it_was_opened_in(tmp_path, monk
         with bind_profile_scope(a, hydrate_secrets=False):
             assert storage.sessions.get("secret")["id"] == "secret"
         monkeypatch.chdir(a)
+
+
+def test_a_relative_handle_wrapped_after_the_directory_changed_keeps_the_profile_it_opened(
+        tmp_path, monkeypatch):
+    """The handle was opened in A by a relative path; the ports are made only after the working
+    directory moved to B. They are A's: B's scope reads nothing of A's."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir(), b.mkdir()
+    monkeypatch.chdir(a)
+    with closing(SessionDB(Path("state.db"))) as db:
+        db.create_session("secret-a", "cli")
+        monkeypatch.chdir(b)
+        storage = _open(db)
+        assert storage.sessions.home == a.resolve()
+        with bind_profile_scope(b, hydrate_secrets=False):
+            with pytest.raises(StoragePinRefused):
+                storage.sessions.get("secret-a")
+        with bind_profile_scope(a, hydrate_secrets=False):
+            assert storage.sessions.get("secret-a")["id"] == "secret-a"
+        assert not (b / "state.db").exists()
+        monkeypatch.chdir(a)
+
+
+def test_a_handle_that_does_not_record_its_opened_file_is_refused():
+    class Handle:
+        db_path = Path("state.db")
+    with pytest.raises(StoragePinRefused, match="which file"):
+        _open(Handle())
+
+
+def test_a_relative_scope_names_the_directory_it_resolves_to_now(tmp_path, monkeypatch):
+    """A relative scope agent accepted in A names B's directory after the working directory
+    moves to B, and is refused there, however it was resolved before."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    (a / "home").mkdir(parents=True), (b / "home").mkdir(parents=True)
+    with closing(SessionDB(a / "home" / "state.db")) as db:
+        storage = _open(db)
+        db.create_session("secret-a", "cli")
+        monkeypatch.chdir(a)
+        with push_state(scope=Scope("local", "home", Principal("owner"))):
+            assert storage.sessions.get("secret-a")["id"] == "secret-a"
+        monkeypatch.chdir(b)
+        with push_state(scope=Scope("local", "home", Principal("owner"))):
+            with pytest.raises(StoragePinRefused):
+                storage.sessions.get("secret-a")
 
 
 def test_a_directory_alias_of_the_profile_is_the_same_profile(tmp_path):

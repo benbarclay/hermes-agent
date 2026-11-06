@@ -10,7 +10,9 @@ scope bound, the pin is the ambient profile (``get_hermes_home()``), as every lo
 today.
 
 The store's identity is frozen when the ports open: the database file's canonical path and the
-profile home that holds it, resolved once, never recomputed against a later working directory. A
+profile home that holds it, taken from the absolute path the handle recorded when it opened, never
+recomputed against a later working directory (a handle with a relative path is refused). A
+scope's agent is compared as the canonical absolute directory it names when the operation runs. A
 directory alias of the profile (a symlinked home) is the same profile; a database file that is a
 link into another directory is refused at open, since its rows belong to whichever profile owns
 that directory.
@@ -29,11 +31,16 @@ from hermes_state_port import (
 )
 
 
-def store_identity(db_path: Any) -> tuple[Path, Path]:
-    """``(canonical database file, owning profile home)`` for *db_path*, frozen now: a relative
-    path is taken against the current directory once. Refuses (``StoragePinRefused``) a database
-    file that resolves outside the directory it is named in (a file link into another profile)."""
-    named = Path(os.path.abspath(os.fspath(db_path)))
+def store_identity(db: Any) -> tuple[Path, Path]:
+    """``(canonical database file, owning profile home)`` of the file handle *db* opened: its
+    ``db_path``, which ``SessionDB`` makes absolute when the handle is created, never re-read
+    against a later working directory. Refuses (``StoragePinRefused``) a handle whose path is
+    relative (which file it opened cannot be established now) and a database file that resolves
+    outside the directory it is named in (a file link into another profile)."""
+    opened = getattr(db, "db_path", None)
+    if opened is None or not os.path.isabs(os.fspath(opened)):
+        raise StoragePinRefused(f"session store handle {opened!r} does not record which file it opened")
+    named = Path(os.fspath(opened))
     home = named.parent.resolve()
     canonical = named.resolve()
     if canonical.parent != home:
@@ -46,8 +53,10 @@ class _Pinned:
     """A port over one ``SessionDB`` that refuses any pin but its own profile home."""
 
     def __init__(self, db: Any) -> None:
+        from hermes_constants import hermes_home_key
         self.db = db
-        self.db_file, self.home = store_identity(db.db_path)
+        self.db_file, self.home = store_identity(db)
+        self._home_key = hermes_home_key(self.home)
 
     def _pin(self) -> None:
         from hermes_constants import get_hermes_home, hermes_home_key
@@ -55,7 +64,8 @@ class _Pinned:
         if scope is not None and scope.tenant != LOCAL_TENANT:
             raise StoragePinRefused(f"a local session store serves tenant {LOCAL_TENANT!r} only")
         agent = scope.agent if scope is not None else get_hermes_home()
-        if hermes_home_key(agent) != hermes_home_key(self.home):
+        # Both sides canonical and absolute: a relative agent is the directory it names now.
+        if hermes_home_key(agent) != self._home_key:
             raise StoragePinRefused("the bound agent is not this session store's profile")
 
 
