@@ -87,9 +87,9 @@ class LocalSessionStore(_Pinned, SessionStore):
         # The fence itself is checked by SessionDB's write transaction (hermes_state_fence).
         return self.db.append_messages_batch(session_id, messages)
 
-    def read_conversation(self, session_id):
+    def read_conversation(self, session_id, *, include_row_ids=False):
         self._pin()
-        return self.db.get_messages_as_conversation(session_id)
+        return self.db.get_messages_as_conversation(session_id, include_row_ids=include_row_ids)
 
     def get_title(self, session_id):
         self._pin()

@@ -79,8 +79,9 @@ class SessionStore(ABC):
         (``TurnFenceRequiredError``) when no claimed turn of *session_id* on this store is bound."""
 
     @abstractmethod
-    def read_conversation(self, session_id: str) -> list[dict[str, Any]]:
-        """The session's active transcript, oldest first."""
+    def read_conversation(self, session_id: str, *, include_row_ids: bool = False) -> list[dict[str, Any]]:
+        """The session's active transcript, oldest first. ``include_row_ids`` adds each message's
+        ``_row_id``, the id the row-addressed operations below take."""
 
     @abstractmethod
     def get_title(self, session_id: str) -> Optional[str]:
