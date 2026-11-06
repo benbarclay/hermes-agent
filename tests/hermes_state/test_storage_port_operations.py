@@ -279,3 +279,21 @@ def test_runtime_mutations_and_worker_receipts_are_todays_ledger(queued):
     adopted = a.adopt_worker(epoch=later, execution_id="w", session_id="s1", generation=gen,
                              adoption_secret="secret")
     assert adopted["owner_epoch"] == later
+
+
+def test_a_directory_alias_moved_before_wrapping_is_refused(tmp_path):
+    """The handle opened A's file through an alias; the alias now names B. Wrapping must not label
+    A's open connection as B's profile."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir(), b.mkdir()
+    with closing(SessionDB(b / "state.db")) as other:
+        other.create_session("b-own", "cli")
+    alias = tmp_path / "alias"
+    alias.symlink_to(a, target_is_directory=True)
+    with closing(SessionDB(alias / "state.db")) as db:
+        db.create_session("secret-a", "cli")
+        db.append_message("secret-a", "user", "A only")
+        alias.unlink()
+        alias.symlink_to(b, target_is_directory=True)
+        with pytest.raises(StoragePinRefused, match="no longer names"):
+            _open(db)

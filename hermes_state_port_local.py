@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_scope import LOCAL_TENANT, current_scope
+from hermes_state_common import stat_db_file_identity
 from hermes_state_port import (
     ANY_HEAD, ClaimPreconditions, OwnerHandle, SessionStorage, SessionStorageProvider, SessionStore,
     StoragePinRefused, TurnAdmission,
@@ -46,6 +47,13 @@ def store_identity(db: Any) -> tuple[Path, Path]:
     if canonical.parent != home:
         raise StoragePinRefused(
             f"session store {named} is a link into {canonical.parent}, not a file of its profile {home}")
+    # The path is re-read now; the handle's connection is to the file it opened then. They must be
+    # the same file, or a directory alias moved in between would name another profile's home for
+    # this connection's rows.
+    recorded = getattr(db, "_db_file_identity", None)
+    if recorded is None or stat_db_file_identity(canonical) != recorded:
+        raise StoragePinRefused(
+            f"session store {named} no longer names the file this handle opened")
     return canonical, home
 
 
