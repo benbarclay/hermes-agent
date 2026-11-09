@@ -132,7 +132,8 @@ def _script_dir(env) -> str:
 
     try:
         temp = env.get_temp_dir()
-    except Exception:
+    except (AttributeError, OSError):
+        # a backend without the optional temp-dir operation falls back to its workspace
         temp = None
     base = temp or getattr(env, "cwd", "") or ""
     return posixpath.join(base, _SCRIPT_DIRS) if base else _SCRIPT_DIRS
