@@ -22,7 +22,8 @@ import registry_freeze
 from hermes_constants import get_hermes_home
 from tests.hermes_cli import test_hosted_mode as boot_tests
 from tests.hermes_cli.test_hosted_mode import (
-    SANDBOX_PLUGIN, STORAGE_PLUGIN, _clean_hosted_config, _curated, _install_plugin, _write_config,
+    SANDBOX_PLUGIN, STORAGE_PLUGIN, VERIFIER_PLUGIN, _bundled_verifier, _clean_hosted_config, _curated,
+    _install_plugin, _write_config,
 )
 
 
@@ -48,14 +49,16 @@ def verdict(monkeypatch):
 @pytest.fixture
 def clean_hosted(verdict, monkeypatch, tmp_path):
     """The deployment of the passing-boot test, with an empty bundled-plugins dir so the boot
-    judges the home's own stubs; the storage stub installs in the session-storage kind's bundled
-    dir (a hosted boot resolves named providers only from the bundled tree)."""
-    from plugins import session_storage
+    judges the home's own stubs; the storage and verifier stubs install in their kinds' bundled
+    dirs (a hosted boot resolves named providers only from the bundled tree)."""
+    from plugins import identity_verifier, session_storage
 
     bundled = tmp_path / "bundled"
     (bundled / "session_storage").mkdir(parents=True)
+    (bundled / "identity_verifier").mkdir(parents=True)
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
     monkeypatch.setattr(session_storage, "_PLUGINS_DIR", bundled / "session_storage")
+    monkeypatch.setattr(identity_verifier, "_PLUGINS_DIR", bundled / "identity_verifier")
     _write_config(_clean_hosted_config())
     _install_plugin("stub-sandbox", SANDBOX_PLUGIN, manifest={"name": "stub-sandbox",
                                                               "version": "1.0"})
@@ -63,6 +66,7 @@ def clean_hosted(verdict, monkeypatch, tmp_path):
     storage = session_storage._PLUGINS_DIR / "stub-storage"
     storage.mkdir(parents=True)
     (storage / "__init__.py").write_text(STORAGE_PLUGIN, encoding="utf-8")
+    _bundled_verifier("stub-verifier", VERIFIER_PLUGIN)
 
 
 def test_a_local_boot_never_freezes_the_registries(verdict):
