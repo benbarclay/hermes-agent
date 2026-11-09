@@ -81,6 +81,8 @@ export const arBoot = {
     restoredDraftAttachmentsDropped: 'لم تتم استعادة مرفقات رسالتك غير المرسلة. أرفقها مرة أخرى قبل إرسالها.',
     mcpReloadDeferred:
       'هذه المحادثة مشغولة: يُطبَّق تغيير MCP بعد انتهاء دورها وإعادة تحميل MCP مجددًا، أو عند إعادة فتح المحادثة',
+    mcpReloadRestartRequired:
+      'لا يطبّق هذا الاتصال تغييرات MCP إلا بعد إعادة تشغيل خادمه الخلفي: التغيير محفوظ وسيسري حينها',
     mcpReloadUnavailable: servers => `تعذّر الاتصال: ${servers}`,
     compactedTurnUnavailable: 'تم تلخيص هذه الرسالة عند ضغط المحادثة، لذا لم يعد بالإمكان استعادتها أو تحريرها.',
     staleTurnUnavailable: 'لم تعد هذه الرسالة موجودة في سجل هذه المحادثة.',

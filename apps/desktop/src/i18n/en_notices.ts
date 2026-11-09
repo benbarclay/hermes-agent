@@ -25,6 +25,8 @@ export const enNotices = {
       "Attachments from your unsent message weren't restored. Attach them again before you send it.",
     mcpReloadDeferred:
       'This chat is busy: the MCP change applies once its turn finishes and MCP reloads again, or when you reopen the chat',
+    mcpReloadRestartRequired:
+      'This connection applies MCP changes only after its backend restarts: the change is saved and takes effect then',
     mcpReloadUnavailable: servers => `Did not connect: ${servers}`,
     compactedTurnUnavailable:
       "That message was summarized when the chat was compressed, so it can't be restored or edited anymore.",

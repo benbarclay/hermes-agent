@@ -25,6 +25,8 @@ export const esNotices = {
       'Los adjuntos de tu mensaje no enviado no se restauraron. Vuelve a adjuntarlos antes de enviarlo.',
     mcpReloadDeferred:
       'Este chat está ocupado: el cambio de MCP se aplica cuando termine su turno y MCP se recargue de nuevo, o al volver a abrir el chat',
+    mcpReloadRestartRequired:
+      'Esta conexión aplica los cambios de MCP solo después de que su backend se reinicie: el cambio está guardado y surtirá efecto entonces',
     mcpReloadUnavailable: servers => `No se conectó: ${servers}`,
     compactedTurnUnavailable:
       'Ese mensaje se resumió al comprimir el chat, así que ya no se puede restaurar ni editar.',

@@ -25,6 +25,8 @@ export const deNotices = {
       'Anhänge aus deiner nicht gesendeten Nachricht wurden nicht wiederhergestellt. Füge sie erneut hinzu, bevor du sie sendest.',
     mcpReloadDeferred:
       'Dieser Chat ist beschäftigt: Die MCP-Änderung gilt, sobald sein Durchlauf endet und MCP erneut geladen wird, oder wenn du den Chat wieder öffnest',
+    mcpReloadRestartRequired:
+      'Diese Verbindung wendet MCP-Änderungen erst nach einem Neustart ihres Backends an: Die Änderung ist gespeichert und wird dann wirksam',
     mcpReloadUnavailable: servers => `Keine Verbindung: ${servers}`,
     compactedTurnUnavailable:
       'Diese Nachricht wurde beim Komprimieren des Chats zusammengefasst und kann nicht mehr wiederhergestellt oder bearbeitet werden.',

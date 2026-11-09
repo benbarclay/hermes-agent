@@ -19,6 +19,8 @@ export interface NoticeTranslations {
     restoredDraftAttachmentsDropped: string
     /** reload.mcp left the chat's servers as they were: a turn was running or waiting. */
     mcpReloadDeferred: string
+    /** reload.mcp answered restart_required: the backend applies MCP changes only after it restarts. */
+    mcpReloadRestartRequired: string
     /** A reloaded MCP server the chat does not run (no_mcp, an explicit pick, a platform allowlist). */
     /** Configured MCP servers that did not connect on reload. */
     mcpReloadUnavailable: (servers: string) => string

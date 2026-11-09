@@ -41,6 +41,18 @@ describe('a saved MCP change reports what the chat got', () => {
     )
   })
 
+  it('says the backend must restart before the change applies, when the reload is refused that way', async () => {
+    await save({ status: 'restart_required', message: 'restart required: registries are frozen' })
+
+    expect(mocks.notify).toHaveBeenCalledTimes(1)
+    expect(mocks.notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'mcp-reload-restart-required',
+        message: expect.stringMatching(/restart/i)
+      })
+    )
+  })
+
   it('reports both a deferral and an unavailable server', async () => {
     await save({ session: 'busy', status: 'reloaded', unavailable: ['broken'] })
 

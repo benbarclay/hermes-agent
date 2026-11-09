@@ -11,6 +11,9 @@ import { refreshToolMediaOwners } from '@/store/tool-media-owners'
  * answer, so a successful RPC envelope alone never means the chat got the change.
  */
 export interface McpReloadOutcome {
+  /** The backend answered ``restart_required``: it runs with frozen MCP settings, so nothing
+   *  applied and the change takes effect after that process restarts. */
+  restartRequired: boolean
   /** A turn was running or queued: the chat keeps its servers until the turn finishes and MCP reloads
    *  again, or until it is reopened. */
   deferred: boolean
@@ -35,15 +38,20 @@ export async function reloadMcp(
   refreshToolMediaOwners()
 
   return {
+    restartRequired: result?.status === 'restart_required',
     deferred: result?.session === 'busy',
     sessionServers: result?.session_servers ?? null,
     unavailable: result?.unavailable ?? []
   }
 }
 
-/** Tell the user what did not take effect: a deferred chat, and servers (other than `skip`) that did not
- *  connect. */
+/** Tell the user what did not take effect: a reload answered ``restart_required``, a deferred chat, and
+ * servers (other than `skip`) that did not connect. */
 export function announceMcpReload(outcome: McpReloadOutcome, skip: readonly string[] = []): void {
+  if (outcome.restartRequired) {
+    notify({ id: 'mcp-reload-restart-required', kind: 'info', message: translateNow('promptNotices.mcpReloadRestartRequired') })
+  }
+
   if (outcome.deferred) {
     notify({ id: 'mcp-reload-deferred', kind: 'info', message: translateNow('promptNotices.mcpReloadDeferred') })
   }

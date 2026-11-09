@@ -2645,6 +2645,7 @@
     "promptNotices.desktopCommands.unknownPath",
     "promptNotices.legacySendUnconfirmed",
     "promptNotices.mcpReloadDeferred",
+    "promptNotices.mcpReloadRestartRequired",
     "promptNotices.mcpReloadUnavailable",
     "promptNotices.restoredDraftAttachmentsDropped",
     "promptNotices.sessionCommands.busy",

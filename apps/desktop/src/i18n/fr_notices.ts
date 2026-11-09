@@ -25,6 +25,8 @@ export const frNotices = {
       "Les pièces jointes de votre message non envoyé n'ont pas été restaurées. Joignez-les à nouveau avant de l'envoyer.",
     mcpReloadDeferred:
       'Cette discussion est occupée : la modification MCP s’applique à la fin de son tour et au prochain rechargement MCP, ou à la réouverture de la discussion',
+    mcpReloadRestartRequired:
+      'Cette connexion n’applique les changements MCP qu’après le redémarrage de son backend : le changement est enregistré et prendra effet alors',
     mcpReloadUnavailable: servers => `Connexion impossible : ${servers}`,
     compactedTurnUnavailable:
       'Ce message a été résumé lors de la compression de la conversation : il ne peut plus être restauré ni modifié.',

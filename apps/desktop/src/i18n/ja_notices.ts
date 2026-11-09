@@ -25,6 +25,8 @@ export const jaNotices = {
       '未送信のメッセージの添付ファイルは復元されませんでした。送信する前にもう一度添付してください。',
     mcpReloadDeferred:
       'このチャットは処理中です。MCP の変更は現在のターンが終わって MCP を再読み込みしたとき、またはチャットを開き直したときに反映されます',
+    mcpReloadRestartRequired:
+      'この接続では MCP の変更はそのバックエンドの再起動後にのみ適用されます。変更は保存されており、そのとき有効になります',
     mcpReloadUnavailable: servers => `接続できませんでした: ${servers}`,
     compactedTurnUnavailable: 'このメッセージはチャットの圧縮時に要約されたため、復元や編集はできなくなりました。',
     staleTurnUnavailable: 'このメッセージはこのチャットの履歴にはもうありません。',
