@@ -54,7 +54,6 @@ HOST_FEATURES = frozenset({
     "checkpoints",                # shadow-git checkpoints and rollback of the working directory
     "media_processing",           # images/video decoded, converted and cached on this host
     "skills",                     # the profile's skill files: index, preload, auto-load, slash commands
-    "skill_inline_shell",         # !`cmd` blocks in a skill body
     "cron_scripts",               # a cron job's pre-run script
     "shell_hooks",                # operator shell hooks: a host process fed the event payload
     "tool_host_artifacts",        # files an allowed tool keeps here about a call: terminal output

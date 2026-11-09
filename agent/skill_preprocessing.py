@@ -47,12 +47,20 @@ def substitute_template_vars(content: str, skill_dir: Path | None, session_id: s
 def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     """Run one inline-shell snippet and return its stdout (trimmed; stderr when
     stdout is empty). Failures return an ``[inline-shell ...]`` marker instead
-    of raising, so one bad snippet can't wreck the whole skill message."""
+    of raising, so one bad snippet can't wreck the whole skill message.
+
+    A hosted scope runs the snippet in the bound agent's sandbox
+    (``tools.skill_script_runtime``): a skill's code never runs on this host. A
+    local install keeps the subprocess below, unchanged."""
+    from tools.environments.sandbox_scope import hosted_scope
+    if hosted_scope() is not None:
+        from tools.skill_script_runtime import SkillScriptRefused, run_inline_skill_shell
+        try:
+            return run_inline_skill_shell(command, timeout=timeout)
+        except SkillScriptRefused as refusal:
+            return f"[inline-shell refused: {refusal}]"
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     from agent.delegation_context import delegated_child_subprocess_env
-    from tools.hosted_tool_policy import host_feature_refusal
-    if refusal := host_feature_refusal("skill_inline_shell", "Inline skill shell"):
-        return f"[inline-shell refused: {refusal}]"
     try:
         bash = "bash"
         if IS_WINDOWS:

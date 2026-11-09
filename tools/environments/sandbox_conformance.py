@@ -18,6 +18,15 @@ the tool registry, then asserts one isolation invariant:
   on this host (not even the profile's media cache);
 * :func:`check_host_tools_refused` — a tool with no sandbox route (browser, desktop, media
   generation, TTS, skills, cron, delegation, MCP servers) is refused before its handler runs;
+* :func:`check_skill_scripts_run_in_own_sandbox` — a hosted scope's skill scripts (and the
+  inline ``!`cmd``` snippets of a skill body) are copied into its own sandbox at exec time and
+  run there, through the script-source seam in ``tools.skill_script_runtime``, and a run with
+  no hosted scope bound is refused;
+* :func:`check_foreign_skill_indistinguishable` — a skill of a tenant's tree on this host is
+  never a source for a hosted scope: it answers like a skill that exists nowhere, without
+  opening the tree or waking any sandbox;
+* :func:`check_skill_script_grant` — the grant a skill script runs under: this agent's own
+  sandbox and no secrets (no environment value, no credential file, no broker reference);
 * :func:`check_background_process_invisible` — a background process started by A is missing for B;
 * :func:`check_host_backend_refused` — with a host backend configured, a hosted scope's tools
   fail closed instead of running here (backend-independent: run it with ``terminal.backend: local``).
@@ -57,6 +66,7 @@ class Call:
     scope: Optional[Scope]
     command: str = ""
     stdin: str = ""
+    child_env: Optional[dict] = None
 
 
 class RecordingSandboxEnvironment:
@@ -70,12 +80,13 @@ class RecordingSandboxEnvironment:
         self.provider, self.identity, self.cwd, self.timeout, self.env = provider, identity, cwd, 60, {}
         self._processes: dict[str, subprocess.Popen] = {}
 
-    def _record(self, op: str, scope: Optional[Scope], command: str = "", stdin: Optional[str] = None) -> None:
-        self.provider.calls.append(Call(self.identity, op, scope, command, stdin or ""))
+    def _record(self, op: str, scope: Optional[Scope], command: str = "", stdin: Optional[str] = None,
+                child_env: Optional[dict] = None) -> None:
+        self.provider.calls.append(Call(self.identity, op, scope, command, stdin or "", child_env))
 
     def execute(self, command: str, cwd: str = "", *, scope: Scope, stdin_data: Optional[str] = None,
-                **_: Any) -> dict:
-        self._record("execute", scope, command, stdin_data)
+                child_env: Optional[dict] = None, **_: Any) -> dict:
+        self._record("execute", scope, command, stdin_data, child_env)
         launched = "nohup bash -lc" in command and "echo $! >" in command
         return {"output": "4242\n" if launched else "", "returncode": 0}
 
@@ -531,6 +542,144 @@ _PNG = bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de0000000c49444154"
     "08d763f8cfc0000003010100c9fe92ef0000000049454e44ae426082")
 
+# A skill the checks ship into the deployment's catalog (the script-source seam's reader):
+# a directory skill with one script, and a body that would betray a host read.
+_SKILL_NAME = "conformance-skill"
+_SKILL_SCRIPT = "scripts/run.sh"
+_SKILL_BODY = "---\nname: conformance-skill\ndescription: Conformance probe.\n---\nSKILL-CATALOG-CONTENT\n"
+_SKILL_SCRIPT_BODY = "#!/usr/bin/env bash\necho SKILL-CATALOG-SCRIPT-RAN\n"
+
+
+@contextlib.contextmanager
+def _deployment_catalog():
+    """Point the deployment's own skill catalog (the script-source seam reads it through
+    ``hermes_constants.get_bundled_skills_dir``) at a throwaway tree holding one script
+    skill, for the duration. The packaged-install override is the seam's own knob, so a
+    plugin's backend runs the same checks against its own throwaway catalog."""
+    import shutil
+
+    from hermes_constants import get_hermes_home
+
+    root = get_hermes_home() / "cache" / "conformance-skill-catalog"
+    skill = root / _SKILL_NAME
+    (skill / "scripts").mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(_SKILL_BODY, encoding="utf-8")
+    (skill / _SKILL_SCRIPT).write_text(_SKILL_SCRIPT_BODY, encoding="utf-8")
+    saved = os.environ.get("HERMES_BUNDLED_SKILLS")
+    os.environ["HERMES_BUNDLED_SKILLS"] = str(root)
+    try:
+        yield root
+    finally:
+        if saved is None:
+            os.environ.pop("HERMES_BUNDLED_SKILLS", None)
+        else:
+            os.environ["HERMES_BUNDLED_SKILLS"] = saved
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def check_skill_scripts_run_in_own_sandbox(provider: RecordingSandboxProvider, a: Scope, b: Scope) -> None:
+    """A hosted scope's skill scripts are copied into its own sandbox at exec time and run
+    there: A's run ships and executes only in A's sandbox and B's only in B's, whatever
+    task id the call carries; a run with no hosted scope bound is refused, and nothing
+    ever runs on this host."""
+    import base64
+
+    from tools import skill_script_runtime as runtime
+
+    with _deployment_catalog():
+        with _bind(a):
+            runtime.run_skill_script(_SKILL_NAME, _SKILL_SCRIPT, argv=("--who", "probe a"), task_id="t")
+            runtime.run_inline_skill_shell("echo SKILL-INLINE-A", timeout=5, task_id="t")
+        with _bind(b):
+            runtime.run_skill_script(_SKILL_NAME, _SKILL_SCRIPT, task_id="shared-task")
+
+    shipped = base64.b64encode(_SKILL_SCRIPT_BODY.encode("utf-8")).decode("ascii")
+    created = {call.sandbox for call in provider.calls}
+    assert created == {_identity(a), _identity(b)}, f"a skill script ran outside its agent's sandbox: {created}"
+    for scope in (a, b):
+        mine = [c for c in provider.calls if c.sandbox == _identity(scope)]
+        assert all(c.scope is None or _identity(c.scope) == c.sandbox for c in mine), \
+            f"a skill script call of {scope.agent} reached another agent's sandbox"
+        ships = [c for c in mine if c.op == "execute" and "base64 -d" in c.command and shipped in c.stdin]
+        assert ships, f"{scope.agent}'s skill script never reached its sandbox"
+        assert all("/skill-scripts/" in c.command for c in ships), "the script was not shipped into the scratch dir"
+        assert not [c for c in ships if _SKILL_SCRIPT_BODY in c.command], "the script rode in argv, not stdin"
+        runs = [c for c in mine if c.op == "execute" and "base64 -d" not in c.command and "bash" in c.command]
+        assert runs, f"{scope.agent}'s skill script was never executed in its sandbox"
+    # the inline snippet of a skill body takes the same route: A's snippet reached A
+    inline = [c for c in provider.calls if c.op == "execute" and "SKILL-INLINE-A" in c.command]
+    assert inline and all(c.sandbox == _identity(a) for c in inline), "an inline skill snippet ran outside A's sandbox"
+
+    try:  # nothing hosted-shaped runs with no scope bound
+        runtime.run_skill_script(_SKILL_NAME, _SKILL_SCRIPT)
+        raise AssertionError("a skill script ran with no hosted scope bound")
+    except runtime.SkillScriptRefused:
+        pass
+
+
+def check_foreign_skill_indistinguishable(provider: RecordingSandboxProvider, a: Scope, b: Scope) -> None:
+    """A skill that lives in a tenant's tree on this host — a profile's skills directory,
+    which belongs to no bound scope of a shared-process deployment — is never a source:
+    every hosted scope gets the same answer as for a skill that exists nowhere, the
+    tenant tree is never opened, and no sandbox is woken for it."""
+    from hermes_constants import get_hermes_home
+    from tools import skill_script_runtime as runtime
+
+    tenant_tree = get_hermes_home() / "skills"
+    skill = tenant_tree / "tenant-only-skill"
+    (skill / "scripts").mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text("---\nname: tenant-only-skill\ndescription: x\n---\nTENANT-PRIVATE-BODY\n",
+                                    encoding="utf-8")
+    (skill / _SKILL_SCRIPT).write_text("#!/usr/bin/env bash\necho TENANT-PRIVATE-SCRIPT\n", encoding="utf-8")
+    other = Scope("globex", a.agent, Principal("u9"), owner=Principal("u9"), can_administer=True)
+    seen = len(provider.calls)
+    with _watch_host(tenant_tree) as touched:
+        with _deployment_catalog():
+            answers = []
+            for scope in (a, b, other):
+                with _bind(scope):
+                    answers.append(runtime.run_skill_script("tenant-only-skill", _SKILL_SCRIPT, task_id="t"))
+                    answers.append(runtime.run_skill_script("no-such-skill-anywhere", _SKILL_SCRIPT, task_id="t"))
+    assert not touched, f"a hosted skill script read a tenant tree: {touched}"
+    missing = [text for text in answers if "no-such-skill-anywhere" in text]
+    foreign = [text.replace("tenant-only-skill", "no-such-skill-anywhere") for text in answers
+               if "tenant-only-skill" in text]
+    assert missing and foreign, f"the runs did not answer: {answers}"
+    assert set(missing) == set(foreign), \
+        f"a foreign skill is distinguishable from a missing one: {sorted(set(answers))}"
+    assert not [text for text in answers if "TENANT-PRIVATE" in text], "a tenant tree's content leaked"
+    assert len(provider.calls) == seen, "a missing or foreign skill woke a sandbox"
+
+
+def check_skill_script_grant(provider: RecordingSandboxProvider, a: Scope, b: Scope) -> None:
+    """The grant: a skill script runs in this agent's sandbox with no secrets. Nothing of
+    this host travels with it — no environment value of this process or its profile, no
+    credential file, no broker reference — only the script's own bytes, on stdin, into a
+    private directory of the agent's own sandbox."""
+    import base64
+
+    from tools import skill_script_runtime as runtime
+
+    marker = f"SKILL-GRANT-SECRET-{uuid.uuid4().hex[:8]}"
+    saved = os.environ.get("SKILL_GRANT_PROBE")
+    os.environ["SKILL_GRANT_PROBE"] = marker
+    try:
+        with _deployment_catalog():
+            with _bind(a):
+                out = runtime.run_skill_script(_SKILL_NAME, _SKILL_SCRIPT, task_id="t")
+        calls = [c for c in provider.calls if c.sandbox == _identity(a)]
+        payload = " ".join(c.command + " " + c.stdin + " " + base64.b64decode(c.stdin.encode("ascii")).decode(
+            "utf-8", "replace") for c in calls)
+        assert marker not in payload, "a host environment value reached a skill script's run"
+        assert all(c.child_env is None for c in calls), \
+            "a skill script run was handed an environment map (the grant passes none)"
+        assert "SKILL-GRANT-SECRET" not in out, "the run's output carried a secret"
+    finally:
+        if saved is None:
+            os.environ.pop("SKILL_GRANT_PROBE", None)
+        else:
+            os.environ["SKILL_GRANT_PROBE"] = saved
+
 
 def check_media_never_read_on_host(provider: RecordingSandboxProvider, a: Scope, host_dir: Path) -> None:
     """Media sources a hosted agent names (vision, video, image-generation references) are read in
@@ -601,6 +750,9 @@ def checks() -> Iterator[tuple[str, Callable[..., None]]]:
         ("process_notifications_private", check_process_notifications_private),
         ("host_tools_refused", check_host_tools_refused),
         ("oversized_results_stay_in_sandbox", check_oversized_results_stay_in_sandbox),
+        ("skill_scripts_run_in_own_sandbox", check_skill_scripts_run_in_own_sandbox),
+        ("foreign_skill_indistinguishable", check_foreign_skill_indistinguishable),
+        ("skill_script_grant", check_skill_script_grant),
         ("idle_sandbox_kept_while_working", lambda p, a, b: check_idle_sandbox_kept_while_working(p, a)),
         ("idle_sandbox_suspended_not_destroyed", lambda p, a, b: check_idle_sandbox_suspended_not_destroyed(p, a)),
     )
